@@ -407,6 +407,38 @@ function restoreHotbarAfterTrident(sim, found, state, thrown) {
     } catch (_) {}
 }
 
+function playerWithinOneBlock(sim, pose) {
+    try {
+        const location = {
+            x: Number(pose.x),
+            y: Number(pose.y),
+            z: Number(pose.z),
+        };
+        const dimension = getDimension(pose.d);
+        const simId = String(sim.id || "");
+        const players = dimension.getPlayers({
+            location,
+            maxDistance: 1.01,
+        });
+
+        for (const player of players) {
+            try {
+                if (player === sim) continue;
+                if (simId && String(player.id || "") === simId) continue;
+
+                const p = player.location;
+                const dx = Number(p.x) - location.x;
+                const dy = Number(p.y) - location.y;
+                const dz = Number(p.z) - location.z;
+                if (dx * dx + dy * dy + dz * dz <= 1.0) {
+                    return player;
+                }
+            } catch (_) {}
+        }
+    } catch (_) {}
+    return null;
+}
+
 function doThrowTrident(req) {
     const name = String(req.n || "");
     const requester = String(req.r || "");
@@ -426,6 +458,11 @@ function doThrowTrident(req) {
     }
     if (tridentBusy.has(name)) {
         tridentResult(name, requester, false, "busy");
+        return;
+    }
+
+    if (playerWithinOneBlock(sim, pose)) {
+        tridentResult(name, requester, false, "player_too_close");
         return;
     }
 
@@ -453,6 +490,12 @@ function doThrowTrident(req) {
     // native item path: slot 0 use, then release after 10 ticks.
     system.runTimeout(() => {
         try {
+            if (playerWithinOneBlock(sim, pose)) {
+                restoreHotbarAfterTrident(sim, found, slotState, false);
+                tridentBusy.delete(name);
+                tridentResult(name, requester, false, "player_too_close");
+                return;
+            }
             orientSim(sim, pose);
             if (!sim.useItemInSlot(0)) {
                 restoreHotbarAfterTrident(sim, found, slotState, false);
