@@ -96,7 +96,7 @@ class BotGUI:
         )
         if can_manage:
             form.add_button("§b移动到我这里\n同步当前位置和视角", on_click=lambda p: self._move_here(p, fp, admin_context))
-            form.add_button("§6投掷三叉戟\n按我当前的位置和视角投掷", on_click=lambda p: self._throw_trident(p, fp, admin_context))
+            form.add_button("§6投掷三叉戟\n使用假人背包内的三叉戟", on_click=lambda p: self._throw_trident(p, fp, admin_context))
             form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
         form.add_button(
             "返回",
