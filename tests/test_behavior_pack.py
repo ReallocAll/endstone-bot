@@ -44,25 +44,20 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn('world.structureManager.get(structureId)', self.source)
         self.assertIn('startSimulatedPlayerGameTest()', self.source)
 
-    def test_move_restores_verified_yaw_and_converges_pitch(self):
-        self.assertIn("sim.lookAt({", self.source)
+    def test_move_uses_simulated_player_controller_view_until_move(self):
+        self.assertIn("sim.lookAtLocation(", self.source)
+        self.assertIn('GameTest.LookDuration?.UntilMove ?? "UntilMove"', self.source)
         self.assertIn("head.x + dx * invLength * 32", self.source)
         self.assertIn("head.y + dy * invLength * 32", self.source)
         self.assertIn("head.z + dz * invLength * 32", self.source)
-        self.assertIn("function savedPitch(req)", self.source)
-        self.assertIn("function convergeSavedPitch(sim, req, attempt = 0)", self.source)
-        self.assertIn("const actualPitch = Number(current.x)", self.source)
-        self.assertIn("const error = targetPitch - actualPitch", self.source)
-        self.assertIn("const compensatedPitch = targetPitch + error", self.source)
-        self.assertIn("y: Number(current.y)", self.source)
-        self.assertIn("attempt >= 4", self.source)
-        self.assertIn("desiredPoses.get(name) !== req", self.source)
-        self.assertIn("if (sim.isValid) convergeSavedPitch(sim, req, attempt + 1)", self.source)
+        self.assertNotIn("function savedPitch(req)", self.source)
+        self.assertNotIn("function convergeSavedPitch(sim, req", self.source)
+        self.assertNotIn("const compensatedPitch =", self.source)
         self.assertNotIn("rotation: poseRotation(req)", self.source)
-        self.assertNotIn("sim.lookAtLocation(target", self.source)
         self.assertNotIn("sim.setBodyRotation(", self.source)
         self.assertIn("verifyViewSync(name, sim, pose)", self.source)
-        self.assertIn("pitchError > 2.0", self.source)
+        self.assertIn("sim.headRotation.x", self.source)
+        self.assertIn("sim.getViewDirection()", self.source)
 
     def test_throw_does_not_change_position_or_view(self):
         start = self.source.index("function doThrowTrident(req)")
