@@ -15,7 +15,7 @@
 - 玩家可以把自己的当前位置和世界空间视线方向同步给假人；投掷三叉戟时只会扫描并使用假人背包里已经存在的 `minecraft:trident`，不会生成或补充物品，也不自动瞄准、不循环投掷。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
-- 默认在服务器**正常退出、BDS 最终 world save 完成之后**安全启用 Beta APIs；运行中的世界绝不直接改 `level.dat`，避免被 BDS 的内存 LevelData 覆盖。
+- 插件不会在运行中的服务器里自动修改 `level.dat`。它会在 `plugins/bot/` 生成一个明确的离线补丁脚本，停服后用当前 Python 解释器执行即可启用 Beta APIs。
 
 ## 默认限制
 
@@ -30,10 +30,6 @@
     "enabled": true,
     "interval_ticks": 10,
     "distance": 1.0
-  },
-  "beta_api": {
-    "auto_enable": true,
-    "backup_keep": 5
   }
 }
 ```
@@ -89,7 +85,6 @@
 /bot config maxtotal <count>
 /bot config maxperplayer <count>
 /bot config cooldown <seconds>
-/bot config betaauto <true|false>
 ```
 
 给生电玩家解除全部限制：
@@ -108,38 +103,45 @@
 
 ## Behavior Pack / Beta APIs
 
-SimulatedPlayer 依赖 Beta APIs。默认配置 `beta_api.auto_enable=true`。
+SimulatedPlayer 依赖 Beta APIs。插件**不会自动修改正在运行的世界**，也不再使用 `on_load`、`atexit`、后台 helper 子进程等机制。
 
-BDS 会在 Endstone 插件加载前把 LevelData/实验状态读入内存，所以**运行中的服务器不能可靠地修改 `level.dat`**：即使磁盘写入成功，本轮也不会生效，停服时还可能被 BDS 的最终 world save 覆盖。
+插件启用时会根据已经加载的 `server.level.name` 精确定位当前世界，并在插件数据目录生成：
 
-本 fork 采用延迟补丁：
+```text
+plugins/bot/enable_beta.py
+```
 
-1. 插件运行时只根据已加载的 `server.level.name` 精确记录当前世界的 `level.dat`；
-2. 运行中的世界不写 `level.dat`；
-3. 正常 `stop` 后，BDS server thread 已停止并完成最终 world save；
-4. Python 进程退出时通过 `atexit` 执行安全补丁；
-5. 下一次完整启动直接读取已经启用的 Beta APIs。
+脚本中写入的是当前世界 `level.dat` 的精确绝对路径。需要启用 Beta APIs 时：
 
-`/reload` 不会触发这个补丁，因为进程没有退出。崩溃或 `kill -9` 也不会执行，宁可不改也不在不确定状态下写世界文件。
+1. 正常执行 `stop`，等待 BDS 完全退出；
+2. 使用运行 Endstone 的同一个 Python 环境执行脚本；
+3. 再启动服务器。
 
-安全写入仍包含：
+Windows：
 
-- 精确世界路径，不扫描 `worlds/` 猜测；
-- 拒绝符号链接、路径穿越、NBT 长度头异常、重复字段、错误字段类型；
-- 完整解析修改前后的 little-endian NBT，并验证除 `experiments.gametest`、`experiments_ever_used`、`saved_with_toggled_experiments` 外没有语义变化；
-- 写入前在 `level_dat_backups/<world>/` 创建并校验 SHA-256 备份，默认保留最近 5 份；
+```powershell
+python .\plugins\bot\enable_beta.py
+```
+
+Linux：
+
+```bash
+python plugins/bot/enable_beta.py
+```
+
+这个脚本只在你显式执行时修改文件，不会被 `/reload`、插件启停或进程退出自动触发。
+
+安全写入包含：
+
+- 使用插件运行时确认过的当前世界精确 `level.dat` 路径，不扫描或猜测其他世界；
+- 拒绝符号链接、NBT 长度头异常、重复字段和错误字段类型；
+- 完整解析修改前后的 little-endian NBT；
+- 只允许 `experiments.gametest`、`experiments_ever_used`、`saved_with_toggled_experiments` 发生语义变化；
+- 修改前在 `plugins/bot/level_dat_backups/<world>/` 创建并校验 SHA-256 备份；
 - 同目录临时文件 + `fsync` + `os.replace` 原子替换；
 - 写后重新解析验证，失败自动回滚。
 
-可在 `config.json` 设置 `beta_api.auto_enable=false`，或使用 `/bot config betaauto false` 关闭。
-
-Linux/无 GUI 环境如果需要显式离线执行，也提供：
-
-```bash
-endstone-bot-enable-beta
-```
-
-必须在 BDS 已停止时运行。它使用同一套严格校验、备份、原子替换和回滚逻辑，并从 `server.properties -> level-name` 精确定位世界。
+如果世界已经启用 Beta APIs，再次执行脚本只会报告已启用，不会重写 `level.dat`。
 
 Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并更新 `world_behavior_packs.json`。首次安装或 Pack 版本升级后仍需要完整重启一次。
 
@@ -156,8 +158,9 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 ## 数据
 
 - `bots.json`：持久化假人定义、挂机锚点、pitch/yaw 和世界空间视线方向。
-- `config.json`：全局资源限制、位置守护与 Beta APIs 自动启用设置。
-- `level_dat_backups/<world>/`：自动修改 `level.dat` 前创建的校验备份。
+- `config.json`：全局资源限制与位置守护设置。
+- `enable_beta.py`：插件自动生成的显式离线 Beta APIs 补丁脚本。
+- `level_dat_backups/<world>/`：手动执行补丁脚本时创建的校验备份。
 - `player_limits.json`：玩家级例外。
 
 写入均采用临时文件 + replace。
