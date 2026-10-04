@@ -20,6 +20,10 @@ class BotPlugin(Plugin):
     description = "轻量 SimulatedPlayer 假人：玩家限额、管理员例外、GUI 与控制台管理。"
 
     commands = {
+        "botbridge": {
+            "description": "EndstoneBot internal behavior-pack callback.",
+            "usages": ["/botbridge <event: str> <payload: str>"],
+        },
         "bot": {
             "description": "管理 SimulatedPlayer 假人。",
             "usages": [
@@ -117,8 +121,10 @@ class BotPlugin(Plugin):
     @event_handler
     def on_script_message(self, event: ScriptMessageEvent) -> None:
         parsed = self.bridge.handle_script_message(event)
-        if parsed is None:
-            return
+        if parsed is not None:
+            self._handle_bridge_message(parsed)
+
+    def _handle_bridge_message(self, parsed: dict[str, Any]) -> None:
         msg_id = parsed["id"]
         data = parsed["data"]
 
@@ -171,7 +177,15 @@ class BotPlugin(Plugin):
             )
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
-        if command.name.lower() != "bot":
+        command_name = command.name.lower()
+        if command_name == "botbridge":
+            if len(args) < 2:
+                return True
+            parsed = self.bridge.handle_command_callback(str(args[0]), str(args[1]))
+            if parsed is not None:
+                self._handle_bridge_message(parsed)
+            return True
+        if command_name != "bot":
             return False
         if not args:
             return self._open_gui_or_usage(sender)
