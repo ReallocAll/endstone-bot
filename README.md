@@ -12,7 +12,7 @@
 - `/bot` 直接打开玩家 GUI，适合 ClockMenu 只执行一个命令接入。
 - 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
 - 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
-- 玩家可以把自己的当前位置和世界空间视线方向同步给假人；投掷三叉戟时只会扫描并消耗假人背包里已经存在的普通无附魔 `minecraft:trident`，随后生成带有该 SimulatedPlayer owner 的 `minecraft:thrown_trident` 并按同步视线方向发射。不会生成或补充背包物品，也不自动瞄准、不循环投掷。
+- 玩家可以把自己的当前位置和世界空间视线方向同步给假人；投掷三叉戟时只会扫描并消耗假人背包里已经存在的普通无附魔 `minecraft:trident`，随后生成行为包自带的 `endstone_bot:thrown_trident`。该实体复刻原版三叉戟 projectile 参数、owner 指向对应 SimulatedPlayer，并按同步视线方向发射。不会生成或补充背包物品，也不自动瞄准、不循环投掷。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
 - 插件不会在运行中的服务器里自动修改 `level.dat`。它会在 `plugins/bot/` 生成一个明确的离线补丁脚本，停服后用当前 Python 解释器执行即可启用 Beta APIs。
@@ -22,8 +22,8 @@
 ```json
 {
   "limits": {
-    "max_total": 6,
-    "max_per_player": 1,
+    "max_total": 10,
+    "max_per_player": 0,
     "spawn_cooldown_seconds": 10
   },
   "position_guard": {
@@ -34,7 +34,7 @@
 }
 ```
 
-配置文件位于插件数据目录的 `config.json`。管理员 GUI 和 `/bot config ...` 修改后立即生效。
+配置文件位于插件数据目录的 `config.json`。默认普通玩家不能创建假人（上限 0），全服总上限为 10；管理员可以通过配置文件、游戏内 [管理员面板 → 全局设置] 或 `/bot config maxtotal|maxperplayer|cooldown` 调整，全局设置修改后立即生效。
 
 玩家例外保存在 `player_limits.json`：
 
