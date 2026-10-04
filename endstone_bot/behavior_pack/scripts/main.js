@@ -144,65 +144,6 @@ function poseRotation(req) {
     return { x: pitch, y: yaw };
 }
 
-function savedPitch(req) {
-    const dx = Number(req.dx ?? 0);
-    const dy = Number(req.dy ?? 0);
-    const dz = Number(req.dz ?? 0);
-    const lengthSq = dx * dx + dy * dy + dz * dz;
-    if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
-        const ny = dy / Math.sqrt(lengthSq);
-        return -Math.asin(Math.max(-1, Math.min(1, ny))) * 180 / Math.PI;
-    }
-    return poseRotation(req).x;
-}
-
-function setPitchPreservingYaw(sim, pitch) {
-    const current = sim.getRotation();
-    sim.setRotation({
-        x: Math.max(-90, Math.min(90, Number(pitch))),
-        y: Number(current.y),
-    });
-}
-
-function convergeSavedPitch(sim, req, attempt = 0) {
-    const name = String(req.n || "");
-    if (name && desiredPoses.get(name) !== req) return;
-
-    try {
-        const targetPitch = savedPitch(req);
-        const current = sim.getRotation();
-        const actualPitch = Number(current.x);
-        const error = targetPitch - actualPitch;
-
-        if (Math.abs(error) <= 0.5) return;
-        if (attempt >= 4) return;
-
-        // BDS 26.51 can settle SimulatedPlayer pitch away from the requested
-        // value on the following controller tick. Feed the measured error back
-        // into the next request instead of assuming a fixed offset.
-        const compensatedPitch = targetPitch + error;
-        setPitchPreservingYaw(sim, compensatedPitch);
-
-        system.runTimeout(() => {
-            try {
-                if (sim.isValid) convergeSavedPitch(sim, req, attempt + 1);
-            } catch (_) {}
-        }, 1);
-    } catch (_) {}
-}
-
-function applySavedPitch(sim, req) {
-    try {
-        setPitchPreservingYaw(sim, savedPitch(req));
-    } catch (_) {}
-
-    system.runTimeout(() => {
-        try {
-            if (sim.isValid) convergeSavedPitch(sim, req, 0);
-        } catch (_) {}
-    }, 1);
-}
-
 function orientSim(sim, req) {
     const dx = Number(req.dx ?? 0);
     const dy = Number(req.dy ?? 0);
@@ -210,22 +151,34 @@ function orientSim(sim, req) {
     const lengthSq = dx * dx + dy * dy + dz * dz;
 
     if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
+        const invLength = 1 / Math.sqrt(lengthSq);
+        const head = sim.getHeadLocation();
+        const target = {
+            x: head.x + dx * invLength * 32,
+            y: head.y + dy * invLength * 32,
+            z: head.z + dz * invLength * 32,
+        };
+
         try {
-            const head = sim.getHeadLocation();
-            const invLength = 1 / Math.sqrt(lengthSq);
-            sim.lookAt({
-                x: head.x + dx * invLength * 32,
-                y: head.y + dy * invLength * 32,
-                z: head.z + dz * invLength * 32,
-            });
-            applySavedPitch(sim, req);
+            // Use the SimulatedPlayer controller API, not Entity rotation.
+            // UntilMove keeps both pitch and yaw until the bot actually moves,
+            // which matches the saved-pose semantics used by trident throws.
+            sim.lookAtLocation(
+                target,
+                GameTest.LookDuration?.UntilMove ?? "UntilMove",
+            );
+            return;
+        } catch (_) {}
+
+        // Compatibility fallback only for older APIs without lookAtLocation.
+        try {
+            sim.lookAt(target);
             return;
         } catch (_) {}
     }
 
-    const rotation = poseRotation(req);
     try {
-        sim.setRotation(rotation);
+        sim.setRotation(poseRotation(req));
     } catch (_) {}
 }
 
