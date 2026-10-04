@@ -94,10 +94,15 @@ class BotPlugin(Plugin):
 
     def _bridge_poll(self) -> None:
         self.bridge.mark_stale_if_needed()
-        self.bridge.ping()
         if self.bridge.active:
             self._bridge_warning_sent = False
-        elif not self._bridge_warning_sent and self._tick_counter >= 100:
+            return
+
+        # While disconnected, retry the authenticated handshake. Once connected,
+        # the behavior pack's heartbeat is the sole liveness signal so the server
+        # log is not flooded by /scriptevent bot:ping every five seconds.
+        self.bridge.hello()
+        if not self._bridge_warning_sent and self._tick_counter >= 100:
             self.logger.warning(
                 "行为包桥接尚未建立：请检查 Scripting/EndstoneBot 回调日志；首次安装或升级行为包后需要完整重启。"
             )
