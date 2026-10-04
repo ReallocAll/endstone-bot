@@ -43,5 +43,6 @@ namespaces = true
 endstone_bot = [
     "behavior_pack/manifest.json",
     "behavior_pack/scripts/*.js",
+    "behavior_pack/entities/*.json",
     "behavior_pack/structures/**/*.mcstructure",
 ]
