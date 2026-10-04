@@ -12,6 +12,7 @@
 - `/bot` 直接打开玩家 GUI，适合 ClockMenu 只执行一个命令接入。
 - 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
 - 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
+- 玩家可以把自己的当前位置和视角同步给假人，并让假人按该姿态投掷一把普通三叉戟；不自动瞄准、不循环投掷。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
 - 不自动修改 `level.dat`。找不到精确世界目录时 fail closed，不猜测其他世界。
 
@@ -60,6 +61,7 @@
 /bot spawn <name>
 /bot remove <name>
 /bot tp <name>
+/bot trident <name>
 ```
 
 管理员/控制台：
@@ -106,7 +108,8 @@ SimulatedPlayer 依赖 Beta APIs。如果行为包桥接未建立，日志会提
 
 ## Bridge protocol 2
 
-- Python → Behavior Pack 使用 `/scriptevent`；Behavior Pack → Python 使用内部 `/botbridge` 命令回调，payload 采用 UTF-8 hex（仅 `0-9a-f`），避免命令参数对 `%`、引号或空格的词法限制，并避免依赖 Script API 自发 `scriptevent` 是否再次进入 Endstone 的 `ScriptMessageEvent` hook。\n- `bot:hello` 建立随机 token；后续消息必须使用同一 token。
+- Python → Behavior Pack 使用 `/scriptevent`；Behavior Pack → Python 使用内部 `/botbridge` 命令回调，payload 采用 UTF-8 hex（仅 `0-9a-f`），避免命令参数对 `%`、引号或空格的词法限制，并避免依赖 Script API 自发 `scriptevent` 是否再次进入 Endstone 的 `ScriptMessageEvent` hook。
+- `bot:hello` 建立随机 token；后续消息必须使用同一 token。
 - 优先接受 `sourceType=Server`；兼容 Endstone `ConsoleCommandSender` 产生的无实体/无方块/NPC 来源命令，同时拒绝玩家、实体、命令方块和 NPC 来源。
 - `/reload` 时使用经过认证的 `bot:shutdown` 清理远端 SimulatedPlayer 并释放旧 token。
 - heartbeat 超时后插件真正进入断开状态。
@@ -115,7 +118,7 @@ SimulatedPlayer 依赖 Beta APIs。如果行为包桥接未建立，日志会提
 
 ## 数据
 
-- `bots.json`：持久化假人定义和挂机锚点。
+- `bots.json`：持久化假人定义、挂机锚点和 pitch/yaw。
 - `config.json`：全局资源限制。
 - `player_limits.json`：玩家级例外。
 
