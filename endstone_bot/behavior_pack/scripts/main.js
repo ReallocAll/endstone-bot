@@ -23,6 +23,7 @@ const simulatedPlayers = new Map();
 const pendingSpawns = [];
 const tridentBusy = new Set();
 const deadPlayers = new Set();
+const aimTargets = new Set();
 const desiredPoses = new Map();
 
 function sourceKind(event) {
@@ -407,6 +408,47 @@ function restoreHotbarAfterTrident(sim, found, state, thrown) {
     } catch (_) {}
 }
 
+function removeAimTarget(target) {
+    if (!target) return;
+    aimTargets.delete(target);
+    try {
+        if (target.isValid) target.remove();
+    } catch (_) {}
+}
+
+function createAimTarget(sim, pose) {
+    const dx = Number(pose.dx ?? 0);
+    const dy = Number(pose.dy ?? 0);
+    const dz = Number(pose.dz ?? 0);
+    const lengthSq = dx * dx + dy * dy + dz * dz;
+    if (!Number.isFinite(lengthSq) || lengthSq <= 1e-8) {
+        throw new Error("saved view direction is invalid");
+    }
+
+    const invLength = 1 / Math.sqrt(lengthSq);
+    const head = sim.getHeadLocation();
+    const targetLocation = {
+        x: head.x + dx * invLength * 32,
+        y: head.y + dy * invLength * 32,
+        z: head.z + dz * invLength * 32,
+    };
+
+    const target = sim.dimension.spawnEntity("minecraft:armor_stand", targetLocation);
+    aimTargets.add(target);
+    try {
+        target.addEffect("invisibility", 40, {
+            amplifier: 0,
+            showParticles: false,
+        });
+    } catch (_) {}
+
+    sim.lookAtEntity(
+        target,
+        GameTest.LookDuration?.Continuous ?? "Continuous",
+    );
+    return target;
+}
+
 function playerWithinOneBlock(sim, pose) {
     try {
         const location = {
@@ -474,36 +516,49 @@ function doThrowTrident(req) {
 
     tridentBusy.add(name);
     let slotState = null;
+    let aimTarget = null;
 
     try {
         teleportSim(sim, pose);
-        orientSim(sim, pose);
         slotState = swapTridentIntoHotbarZero(sim, found);
+
+        // FlashFakePlayerPack uses lookAtEntity for actions that need to alter
+        // the SimulatedPlayer controller direction. BDS 26.51 visually applies
+        // lookAtLocation but native item use can keep the old controller aim.
+        aimTarget = createAimTarget(sim, pose);
     } catch (e) {
+        removeAimTarget(aimTarget);
         tridentBusy.delete(name);
         if (slotState) restoreHotbarAfterTrident(sim, found, slotState, false);
         tridentResult(name, requester, false, `prepare_failed:${String(e)}`);
         return;
     }
 
-    // Known working Bedrock fake-player packs use the Test-bound SimulatedPlayer
-    // native item path: slot 0 use, then release after 10 ticks.
     system.runTimeout(() => {
         try {
             if (playerWithinOneBlock(sim, pose)) {
+                removeAimTarget(aimTarget);
                 restoreHotbarAfterTrident(sim, found, slotState, false);
                 tridentBusy.delete(name);
                 tridentResult(name, requester, false, "player_too_close");
                 return;
             }
-            orientSim(sim, pose);
+
+            // Keep the target alive and continuously tracked for the entire
+            // charge so the controller aim remains current at release time.
+            sim.lookAtEntity(
+                aimTarget,
+                GameTest.LookDuration?.Continuous ?? "Continuous",
+            );
             if (!sim.useItemInSlot(0)) {
+                removeAimTarget(aimTarget);
                 restoreHotbarAfterTrident(sim, found, slotState, false);
                 tridentBusy.delete(name);
                 tridentResult(name, requester, false, "use_failed");
                 return;
             }
         } catch (e) {
+            removeAimTarget(aimTarget);
             restoreHotbarAfterTrident(sim, found, slotState, false);
             tridentBusy.delete(name);
             tridentResult(name, requester, false, `use_failed:${String(e)}`);
@@ -513,18 +568,21 @@ function doThrowTrident(req) {
         system.runTimeout(() => {
             let thrown = false;
             try {
+                // Release while the controller is still continuously looking at
+                // the temporary target. Remove the target immediately after the
+                // native projectile has been created.
                 sim.stopUsingItem();
+                removeAimTarget(aimTarget);
                 const remaining = found.container.getItem(0);
                 thrown = !remaining || remaining.typeId !== "minecraft:trident";
             } catch (e) {
+                removeAimTarget(aimTarget);
                 restoreHotbarAfterTrident(sim, found, slotState, false);
                 tridentBusy.delete(name);
                 tridentResult(name, requester, false, `release_failed:${String(e)}`);
                 return;
             }
 
-            // Give BDS one tick to remove the native trident ItemStack from slot 0
-            // before restoring the displaced hotbar item.
             system.runTimeout(() => {
                 try {
                     const remaining = found.container.getItem(0);
@@ -551,6 +609,7 @@ function clearAll() {
         desiredPoses.delete(name);
     }
     pendingSpawns.length = 0;
+    for (const target of Array.from(aimTargets)) removeAimTarget(target);
     reply("bot:cleared", { count: entries.length });
 }
 
