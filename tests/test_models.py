@@ -1,26 +1,34 @@
 import importlib.util
-from pathlib import Path
 import sys
 import unittest
+from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("models_under_test", Path("endstone_bot/models.py"))
+root = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("models_under_test", root / "endstone_bot/models.py")
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 FakePlayer = module.FakePlayer
+validate_name = module.validate_name
 
 
 class ModelTests(unittest.TestCase):
-    def test_ai_fields_round_trip(self):
-        fp = FakePlayer(id="x", name="Bot", ai_enabled=True, ai_members=["Alex"])
-        restored = FakePlayer.from_record(fp.to_record())
-        self.assertTrue(restored.ai_enabled)
-        self.assertEqual(restored.ai_members, ["Alex"])
+    def test_old_record_migrates_to_simulated_model(self):
+        fp = FakePlayer.from_record({
+            "id": "x",
+            "name": "FarmBot",
+            "ownerName": "Alice",
+            "ownerUuid": "u",
+            "location": [1, 64, 2],
+            "dimension": "minecraft:nether",
+            "type": "entity",
+        })
+        self.assertEqual(fp.dimension, "nether")
+        self.assertEqual(fp.to_record()["type"], "simulated")
 
-    def test_old_record_defaults(self):
-        fp = FakePlayer.from_record({"id": "x", "name": "Old"})
-        self.assertFalse(fp.ai_enabled)
-        self.assertEqual(fp.ai_members, [])
+    def test_name_validation_blocks_command_injection(self):
+        self.assertIsNotNone(validate_name('x";kill @a', set(), set()))
+        self.assertIsNone(validate_name("Farm_Bot-1", set(), set()))
 
 
 if __name__ == "__main__":
