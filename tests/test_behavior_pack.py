@@ -37,6 +37,13 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertNotIn("GameTest.spawnSimulatedPlayer", self.source)
         self.assertIn("gametest run endstone_bot:sim_spawner", self.source)
 
+    def test_gametest_structure_is_created_at_runtime(self):
+        self.assertIn('world.structureManager.createEmpty(', self.source)
+        self.assertIn('StructureSaveMode.World', self.source)
+        self.assertIn('structure.saveToWorld()', self.source)
+        self.assertIn('world.structureManager.get(structureId)', self.source)
+        self.assertIn('startSimulatedPlayerGameTest()', self.source)
+
     def test_native_aim_does_not_use_gametest_relative_body_rotation(self):
         self.assertIn("sim.lookAtLocation(target", self.source)
         self.assertNotIn("sim.setBodyRotation(", self.source)
