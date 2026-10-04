@@ -86,12 +86,6 @@ def schedule_exit_patch(
     parent_pid = os.getpid()
     request_path = Path(request_path or status_path.with_name("beta_patch_request.json"))
 
-    existing = _read_request(request_path)
-    if existing and int(existing.get("parent_pid", -1)) == parent_pid:
-        worker_pid = int(existing.get("worker_pid", -1))
-        if _pid_alive(worker_pid):
-            return worker_pid
-
     payload: dict[str, Any] = {
         "version": 1,
         "parent_pid": parent_pid,
@@ -102,6 +96,15 @@ def schedule_exit_patch(
         "backup_keep": int(backup_keep),
         "status_path": str(Path(status_path).resolve()),
     }
+
+    existing = _read_request(request_path)
+    if existing and int(existing.get("parent_pid", -1)) == parent_pid:
+        worker_pid = int(existing.get("worker_pid", -1))
+        if _pid_alive(worker_pid):
+            payload["worker_pid"] = worker_pid
+            _write_request(request_path, payload)
+            return worker_pid
+
     _write_request(request_path, payload)
 
     cmd = [
