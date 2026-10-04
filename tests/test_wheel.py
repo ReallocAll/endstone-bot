@@ -6,7 +6,7 @@ import unittest
 
 class WheelTests(unittest.TestCase):
     def test_release_entry_point_and_payload(self):
-        wheels = list(Path("dist").glob("endstone_bot-4.2.3-*.whl"))
+        wheels = list(Path("dist").glob("endstone_bot-4.2.4-*.whl"))
         self.assertEqual(len(wheels), 1)
         with zipfile.ZipFile(wheels[0]) as zf:
             names = set(zf.namelist())
@@ -17,6 +17,7 @@ class WheelTests(unittest.TestCase):
                 "endstone_bot/bridge.py",
                 "endstone_bot/gui.py",
                 "endstone_bot/beta_script.py",
+                "endstone_bot/enable_beta_template.py",
                 "endstone_bot/level_dat.py",
                 "endstone_bot/nbt.py",
                 "endstone_bot/behavior_pack/manifest.json",
