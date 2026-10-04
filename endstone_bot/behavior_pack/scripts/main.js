@@ -11,12 +11,13 @@
  */
 
 import * as GameTest from "@minecraft/server-gametest";
-import { system, world } from "@minecraft/server";
+import { StructureSaveMode, system, world } from "@minecraft/server";
 
 const PROTOCOL = 2;
 const MAX_MESSAGE_CHARS = 1400;
 let bridgeToken = "";
 let activeTest = null;
+let gameTestStartRequested = false;
 
 const simulatedPlayers = new Map();
 const pendingSpawns = [];
@@ -261,6 +262,7 @@ function doSpawn(req) {
 
     if (!activeTest) {
         if (!pendingSpawns.some((x) => String(x.n) === name)) pendingSpawns.push(req);
+        startSimulatedPlayerGameTest();
         return;
     }
 
@@ -547,28 +549,77 @@ function flushPositions(report) {
     if (batch.length > 0) reply("bot:positions", { p: batch });
 }
 
+function ensureGameTestStructure() {
+    const structureId = "endstone_bot:empty";
+
+    try {
+        const existing = world.structureManager.get(structureId);
+        if (existing) return true;
+    } catch (_) {}
+
+    try {
+        // Current Script API can persist at creation time.
+        try {
+            world.structureManager.createEmpty(
+                structureId,
+                { x: 1, y: 1, z: 1 },
+                StructureSaveMode.World,
+            );
+        } catch (currentApiError) {
+            // Keep the same compatibility path used by established fake-player
+            // packs on older beta APIs.
+            const structure = world.structureManager.createEmpty(
+                structureId,
+                { x: 1, y: 1, z: 1 },
+            );
+            if (typeof structure.saveToWorld !== "function") {
+                throw currentApiError;
+            }
+            structure.saveToWorld();
+        }
+
+        return Boolean(world.structureManager.get(structureId));
+    } catch (e) {
+        console.warn(`[EndstoneBot] failed to create GameTest structure: ${e}`);
+        return false;
+    }
+}
+
+function startSimulatedPlayerGameTest() {
+    if (gameTestStartRequested || activeTest) return;
+    gameTestStartRequested = true;
+
+    system.run(() => {
+        if (!ensureGameTestStructure()) {
+            gameTestStartRequested = false;
+            return;
+        }
+
+        try {
+            world.getDimension("overworld").runCommand(
+                "execute positioned 15000000 256 15000000 run gametest run endstone_bot:sim_spawner"
+            );
+        } catch (e) {
+            gameTestStartRequested = false;
+            console.warn(`[EndstoneBot] failed to start SimulatedPlayer GameTest: ${e}`);
+        }
+    });
+}
+
 try {
     if (typeof GameTest.register === "function") {
         let registration = GameTest.register("endstone_bot", "sim_spawner", (test) => {
             activeTest = test;
+            gameTestStartRequested = false;
             while (pendingSpawns.length > 0) doSpawn(pendingSpawns.shift());
         }).structureName("endstone_bot:empty").maxTicks(0x7fffffff);
         if (GameTest.Tags && GameTest.Tags.suiteDefault) {
             registration = registration.tag(GameTest.Tags.suiteDefault);
         }
-
-        system.run(() => {
-            try {
-                world.getDimension("overworld").runCommand(
-                    "execute positioned 15000000 256 15000000 run gametest run endstone_bot:sim_spawner"
-                );
-            } catch (e) {
-                console.warn(`[EndstoneBot] failed to start SimulatedPlayer GameTest: ${e}`);
-            }
-        });
+        startSimulatedPlayerGameTest();
     }
 } catch (e) {
-    console.warn(`[EndstoneBot] fallback GameTest registration failed: ${e}`);
+    console.warn(`[EndstoneBot] GameTest registration failed: ${e}`);
 }
 
 system.afterEvents.scriptEventReceive.subscribe((event) => {
