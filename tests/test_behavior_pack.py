@@ -44,16 +44,24 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn('world.structureManager.get(structureId)', self.source)
         self.assertIn('startSimulatedPlayerGameTest()', self.source)
 
-    def test_native_aim_uses_entity_controller_target(self):
-        self.assertIn('spawnEntity("minecraft:armor_stand"', self.source)
-        self.assertIn("sim.lookAtEntity(", self.source)
-        self.assertIn('GameTest.LookDuration?.Continuous', self.source)
-        self.assertIn('target.addEffect("invisibility"', self.source)
-        self.assertIn("removeAimTarget(aimTarget)", self.source)
+    def test_move_synchronizes_rotation_with_teleport(self):
+        self.assertIn("rotation: poseRotation(req)", self.source)
+        self.assertIn("Math.atan2(-nx, nz)", self.source)
+        self.assertIn("-Math.asin(", self.source)
+        self.assertIn("sim.lookAtLocation(target", self.source)
         self.assertNotIn("sim.setBodyRotation(", self.source)
 
+    def test_throw_does_not_change_position_or_view(self):
+        start = self.source.index("function doThrowTrident(req)")
+        end = self.source.index("\nfunction clearAll()", start)
+        block = self.source[start:end]
+        self.assertNotIn("teleportSim(", block)
+        self.assertNotIn("orientSim(", block)
+        self.assertNotIn("lookAtEntity(", block)
+        self.assertNotIn('spawnEntity("minecraft:armor_stand"', block)
+
     def test_trident_refuses_other_players_within_one_block(self):
-        self.assertIn("playerWithinOneBlock(sim, pose)", self.source)
+        self.assertIn("playerWithinOneBlock(sim)", self.source)
         self.assertIn("maxDistance: 1.01", self.source)
         self.assertIn("dx * dx + dy * dy + dz * dz <= 1.0", self.source)
         self.assertIn("player_too_close", self.source)
