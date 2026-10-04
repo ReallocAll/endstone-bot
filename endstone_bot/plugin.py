@@ -17,7 +17,7 @@ from endstone_bot.settings import SettingsManager
 
 class BotPlugin(Plugin):
     api_version = "0.11"
-    description = "轻量 SimulatedPlayer 假人：玩家限额、管理员例外、GUI 与控制台管理。"
+    description = "轻量 SimulatedPlayer 假人：挂机、定点三叉戟、玩家限额、GUI 与控制台管理。"
 
     commands = {
         "botbridge": {
@@ -50,7 +50,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 0, 4]
+    BEHAVIOR_PACK_VERSION = [4, 1, 0]
 
     def on_enable(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
