@@ -11,7 +11,7 @@
  */
 
 import * as GameTest from "@minecraft/server-gametest";
-import { GameMode, system, world } from "@minecraft/server";
+import { system, world } from "@minecraft/server";
 
 const PROTOCOL = 2;
 const MAX_MESSAGE_CHARS = 1400;
@@ -151,58 +151,24 @@ function orientSim(sim, req) {
 
     if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
         const invLength = 1 / Math.sqrt(lengthSq);
-        const nx = dx * invLength;
-        const ny = dy * invLength;
-        const nz = dz * invLength;
-
-        // Minecraft rotation convention:
-        //   yaw 0 = +Z, +90 = -X
-        //   positive pitch looks downward.
-        const rotation = {
-            x: -Math.asin(Math.max(-1, Math.min(1, ny))) * 180 / Math.PI,
-            y: Math.atan2(-nx, nz) * 180 / Math.PI,
-        };
-
-        let head = null;
-        let target = null;
         try {
-            head = sim.getHeadLocation();
-            target = {
-                x: head.x + nx * 32,
-                y: head.y + ny * 32,
-                z: head.z + nz * 32,
+            const head = sim.getHeadLocation();
+            const target = {
+                x: head.x + dx * invLength * 32,
+                y: head.y + dy * invLength * 32,
+                z: head.z + dz * invLength * 32,
             };
-        } catch (_) {}
-
-        // Synchronize all three rotations used by different parts of the
-        // SimulatedPlayer implementation.  In BDS 26.51 the visible entity
-        // rotation can be correct while item-use still reads controller/body yaw.
-        try {
-            sim.setRotation(rotation);
-        } catch (_) {}
-        try {
-            if (typeof sim.setBodyRotation === "function") {
-                sim.setBodyRotation(rotation.y);
-            }
-        } catch (_) {}
-        try {
-            if (target && typeof sim.lookAtLocation === "function") {
+            if (typeof sim.lookAtLocation === "function") {
                 sim.lookAtLocation(target, GameTest.LookDuration?.Instant ?? "Instant");
-            } else if (target) {
+            } else {
                 sim.lookAt(target);
             }
+            return;
         } catch (_) {}
-        return;
     }
 
-    const rotation = poseRotation(req);
     try {
-        sim.setRotation(rotation);
-    } catch (_) {}
-    try {
-        if (typeof sim.setBodyRotation === "function") {
-            sim.setBodyRotation(rotation.y);
-        }
+        sim.setRotation(poseRotation(req));
     } catch (_) {}
 }
 
@@ -215,33 +181,6 @@ function teleportSim(sim, req) {
     orientSim(sim, req);
 }
 
-function spawnWithGlobalApi(req) {
-    const fn = GameTest.spawnSimulatedPlayer;
-    if (typeof fn !== "function") return null;
-    const dimension = getDimension(req.d);
-    const location = {
-        dimension,
-        x: Number(req.x),
-        y: Number(req.y),
-        z: Number(req.z),
-    };
-    const name = String(req.n);
-
-    // Current 2.x API requires GameMode. Keep string fallbacks for older beta builds.
-    try {
-        return fn(location, name, GameMode.Survival);
-    } catch (currentError) {
-        try {
-            return fn(location, name, "Survival");
-        } catch (_) {
-            try {
-                return fn(location, name, "survival");
-            } catch (_) {
-                throw currentError;
-            }
-        }
-    }
-}
 
 function spawnWithTestApi(req) {
     if (!activeTest) return null;
@@ -320,32 +259,21 @@ function doSpawn(req) {
         tridentBusy.delete(name);
     }
 
+    if (!activeTest) {
+        if (!pendingSpawns.some((x) => String(x.n) === name)) pendingSpawns.push(req);
+        return;
+    }
+
     let sim = null;
-    let globalError = null;
     try {
-        sim = spawnWithGlobalApi(req);
+        sim = spawnWithTestApi(req);
     } catch (e) {
-        globalError = e;
+        reply("bot:error", { n: name, e: `GameTest spawn failed: ${String(e)}` });
+        return;
     }
 
     if (!sim) {
-        try {
-            sim = spawnWithTestApi(req);
-        } catch (e) {
-            reply("bot:error", { n: name, e: `spawn fallback failed: ${String(e)}` });
-            return;
-        }
-    }
-
-    if (!sim) {
-        if (!activeTest && typeof GameTest.spawnSimulatedPlayer !== "function") {
-            if (!pendingSpawns.some((x) => String(x.n) === name)) pendingSpawns.push(req);
-            return;
-        }
-        reply("bot:error", {
-            n: name,
-            e: globalError ? `spawn failed: ${String(globalError)}` : "spawnSimulatedPlayer returned null",
-        });
+        reply("bot:error", { n: name, e: "Test.spawnSimulatedPlayer returned null" });
         return;
     }
 
@@ -427,52 +355,6 @@ function findTrident(sim) {
     return null;
 }
 
-function hasUnsupportedTridentEnchantments(item) {
-    try {
-        const enchantable = item.getComponent("minecraft:enchantable");
-        return Boolean(enchantable && enchantable.getEnchantments().length > 0);
-    } catch (_) {
-        return false;
-    }
-}
-
-function normalizedPoseDirection(pose) {
-    const dx = Number(pose.dx ?? 0);
-    const dy = Number(pose.dy ?? 0);
-    const dz = Number(pose.dz ?? 0);
-    const lengthSq = dx * dx + dy * dy + dz * dz;
-    if (!Number.isFinite(lengthSq) || lengthSq <= 1e-8) return null;
-    const invLength = 1 / Math.sqrt(lengthSq);
-    return {
-        x: dx * invLength,
-        y: dy * invLength,
-        z: dz * invLength,
-    };
-}
-
-function restoreInventoryItem(container, slot, originalItem) {
-    try {
-        container.setItem(slot, originalItem);
-    } catch (_) {}
-}
-
-function removeOneInventoryItem(container, slot, originalItem) {
-    const amount = Number(originalItem.amount ?? 1);
-    if (amount <= 1) {
-        container.setItem(slot);
-        return;
-    }
-    const remaining = originalItem.clone();
-    remaining.amount = amount - 1;
-    container.setItem(slot, remaining);
-}
-
-function cleanupProjectile(entity) {
-    try {
-        if (entity?.isValid) entity.remove();
-    } catch (_) {}
-}
-
 function tridentResult(name, requester, ok, reason = "") {
     reply("bot:trident_result", {
         n: name,
@@ -480,6 +362,47 @@ function tridentResult(name, requester, ok, reason = "") {
         ok: Boolean(ok),
         reason: String(reason || ""),
     });
+}
+
+function swapTridentIntoHotbarZero(sim, found) {
+    const previousSelected = Number(sim.selectedSlotIndex ?? 0);
+    const oldZero = found.container.getItem(0);
+    if (found.slot !== 0) {
+        found.container.setItem(0, found.item);
+        if (oldZero) {
+            found.container.setItem(found.slot, oldZero);
+        } else {
+            found.container.setItem(found.slot);
+        }
+    }
+    sim.selectedSlotIndex = 0;
+    return {
+        previousSelected,
+        sourceSlot: found.slot,
+        swapped: found.slot !== 0,
+    };
+}
+
+function restoreHotbarAfterTrident(sim, found, state, thrown) {
+    try {
+        if (state.swapped) {
+            const displaced = found.container.getItem(state.sourceSlot);
+            if (!thrown) {
+                const currentZero = found.container.getItem(0);
+                if (currentZero) found.container.setItem(state.sourceSlot, currentZero);
+                else found.container.setItem(state.sourceSlot);
+            } else {
+                found.container.setItem(state.sourceSlot);
+            }
+
+            if (displaced) found.container.setItem(0, displaced);
+            else found.container.setItem(0);
+        }
+    } catch (_) {}
+
+    try {
+        sim.selectedSlotIndex = state.previousSelected;
+    } catch (_) {}
 }
 
 function doThrowTrident(req) {
@@ -509,72 +432,66 @@ function doThrowTrident(req) {
         tridentResult(name, requester, false, "no_trident");
         return;
     }
-    if (hasUnsupportedTridentEnchantments(found.item)) {
-        tridentResult(name, requester, false, "enchanted_trident_unsupported");
-        return;
-    }
-
-    const direction = normalizedPoseDirection(pose);
-    if (!direction) {
-        tridentResult(name, requester, false, "invalid_direction");
-        return;
-    }
 
     tridentBusy.add(name);
-    let projectileEntity = null;
-    let inventoryChanged = false;
-    const originalItem = found.item.clone();
+    let slotState = null;
 
     try {
         teleportSim(sim, pose);
         orientSim(sim, pose);
-
-        const head = sim.getHeadLocation();
-        const launch = {
-            x: head.x + direction.x * 0.6,
-            y: head.y + direction.y * 0.6,
-            z: head.z + direction.z * 0.6,
-        };
-
-        projectileEntity = sim.dimension.spawnEntity("endstone_bot:thrown_trident", launch);
-        const projectile = projectileEntity.getComponent("minecraft:projectile");
-        if (!projectile) {
-            throw new Error("minecraft:projectile component missing");
-        }
-
-        // Set owner before launch so collision, damage and attacker attribution
-        // are evaluated as a player-thrown projectile.
-        projectile.owner = sim;
-
-        // Consume exactly the physical trident that was found in the bot's
-        // inventory. Any later failure restores the exact ItemStack clone.
-        removeOneInventoryItem(found.container, found.slot, originalItem);
-        inventoryChanged = true;
-
-        const speed = 2.5;
-        projectile.shoot({
-            x: direction.x * speed,
-            y: direction.y * speed,
-            z: direction.z * speed,
-        });
-
-        try {
-            sim.dimension.playSound("item.trident.throw", head, {
-                volume: 1.0,
-                pitch: 1.0,
-            });
-        } catch (_) {}
-
-        tridentResult(name, requester, true);
+        slotState = swapTridentIntoHotbarZero(sim, found);
     } catch (e) {
-        cleanupProjectile(projectileEntity);
-        if (inventoryChanged) {
-            restoreInventoryItem(found.container, found.slot, originalItem);
-        }
-        tridentResult(name, requester, false, `projectile_failed:${String(e)}`);
-    } finally {
         tridentBusy.delete(name);
+        if (slotState) restoreHotbarAfterTrident(sim, found, slotState, false);
+        tridentResult(name, requester, false, `prepare_failed:${String(e)}`);
+        return;
     }
+
+    // Known working Bedrock fake-player packs use the Test-bound SimulatedPlayer
+    // native item path: slot 0 use, then release after 10 ticks.
+    system.runTimeout(() => {
+        try {
+            orientSim(sim, pose);
+            if (!sim.useItemInSlot(0)) {
+                restoreHotbarAfterTrident(sim, found, slotState, false);
+                tridentBusy.delete(name);
+                tridentResult(name, requester, false, "use_failed");
+                return;
+            }
+        } catch (e) {
+            restoreHotbarAfterTrident(sim, found, slotState, false);
+            tridentBusy.delete(name);
+            tridentResult(name, requester, false, `use_failed:${String(e)}`);
+            return;
+        }
+
+        system.runTimeout(() => {
+            let thrown = false;
+            try {
+                sim.stopUsingItem();
+                const remaining = found.container.getItem(0);
+                thrown = !remaining || remaining.typeId !== "minecraft:trident";
+            } catch (e) {
+                restoreHotbarAfterTrident(sim, found, slotState, false);
+                tridentBusy.delete(name);
+                tridentResult(name, requester, false, `release_failed:${String(e)}`);
+                return;
+            }
+
+            // Give BDS one tick to remove the native trident ItemStack from slot 0
+            // before restoring the displaced hotbar item.
+            system.runTimeout(() => {
+                try {
+                    const remaining = found.container.getItem(0);
+                    thrown = thrown || !remaining || remaining.typeId !== "minecraft:trident";
+                    restoreHotbarAfterTrident(sim, found, slotState, thrown);
+                    tridentResult(name, requester, thrown, thrown ? "" : "release_failed");
+                } finally {
+                    tridentBusy.delete(name);
+                }
+            }, 1);
+        }, 10);
+    }, 1);
 }
 
 function clearAll() {
@@ -639,6 +556,16 @@ try {
         if (GameTest.Tags && GameTest.Tags.suiteDefault) {
             registration = registration.tag(GameTest.Tags.suiteDefault);
         }
+
+        system.run(() => {
+            try {
+                world.getDimension("overworld").runCommand(
+                    "execute positioned 15000000 256 15000000 run gametest run endstone_bot:sim_spawner"
+                );
+            } catch (e) {
+                console.warn(`[EndstoneBot] failed to start SimulatedPlayer GameTest: ${e}`);
+            }
+        });
     }
 } catch (e) {
     console.warn(`[EndstoneBot] fallback GameTest registration failed: ${e}`);
