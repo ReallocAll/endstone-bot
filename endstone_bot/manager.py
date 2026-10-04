@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,7 @@ class FakeBotManager:
     def save(self) -> None:
         try:
             tmp = self._db_path.with_suffix(".json.tmp")
-            payload = {"version": 6, "bots": [fp.to_record() for fp in self.bots.values()]}
+            payload = {"version": 7, "bots": [fp.to_record() for fp in self.bots.values()]}
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self._db_path)
             self._dirty = False
@@ -93,6 +94,55 @@ class FakeBotManager:
         key = self._settings.remember_player(uuid, name)
         return key, uuid, name
 
+
+    @staticmethod
+    def _view_direction(location: Any) -> tuple[float, float, float] | None:
+        try:
+            direction = location.direction
+            x = float(direction.x)
+            y = float(direction.y)
+            z = float(direction.z)
+            length = math.sqrt(x * x + y * y + z * z)
+            if not math.isfinite(length) or length <= 1e-6:
+                return None
+            return (x / length, y / length, z / length)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _pose_payload(fp: FakePlayer) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "n": fp.name,
+            "x": fp.location_x,
+            "y": fp.location_y,
+            "z": fp.location_z,
+            "d": fp.dimension,
+            "pitch": fp.pitch,
+            "yaw": fp.yaw,
+        }
+        length_sq = fp.view_x * fp.view_x + fp.view_y * fp.view_y + fp.view_z * fp.view_z
+        if length_sq > 1e-8:
+            payload["dx"] = fp.view_x
+            payload["dy"] = fp.view_y
+            payload["dz"] = fp.view_z
+        return payload
+
+    def _capture_player_pose(self, sender: Any, fp: FakePlayer) -> bool:
+        loc = getattr(sender, "location", None)
+        if loc is None:
+            return False
+        fp.location_x = round(float(loc.x), 2)
+        fp.location_y = round(float(loc.y), 2)
+        fp.location_z = round(float(loc.z), 2)
+        fp.dimension = self._plugin.dimension_id(loc.dimension)
+        fp.pitch = round(float(getattr(loc, "pitch", 0.0)), 2)
+        fp.yaw = round(float(getattr(loc, "yaw", 0.0)), 2)
+        direction = self._view_direction(loc)
+        if direction is not None:
+            fp.view_x, fp.view_y, fp.view_z = direction
+        fp.sim_has_position = False
+        return True
+
     def spawn_limit_error(self, sender: Any) -> str | None:
         if self._plugin.is_admin(sender):
             return None
@@ -125,6 +175,7 @@ class FakeBotManager:
         owner_name = str(getattr(sender, "name", "") or "")
         owner_uuid = str(getattr(sender, "unique_id", "") or "")
         key = self._settings.remember_player(owner_uuid, owner_name)
+        direction = self._view_direction(location)
         fp = FakePlayer(
             id=generate_id(),
             name=name.strip(),
@@ -137,6 +188,9 @@ class FakeBotManager:
             pitch=round(float(getattr(location, "pitch", 0.0)), 2),
             yaw=round(float(getattr(location, "yaw", 0.0)), 2),
             created=format_date_time_beijing(),
+            view_x=direction[0] if direction else 0.0,
+            view_y=direction[1] if direction else 0.0,
+            view_z=direction[2] if direction else 0.0,
         )
         self.bots[fp.id] = fp
         self.name_index[fp.name.lower()] = fp.id
@@ -180,24 +234,14 @@ class FakeBotManager:
         if not force and now - last < 10.0:
             return False
         self._last_spawn_request[fp.id] = now
-        return self._bridge.send_bridge("spawn", {
-            "n": fp.name,
-            "x": fp.location_x,
-            "y": fp.location_y,
-            "z": fp.location_z,
-            "d": fp.dimension,
-            "pitch": fp.pitch,
-            "yaw": fp.yaw,
-        })
+        return self._bridge.send_bridge("spawn", self._pose_payload(fp))
 
     def ensure_all_spawned(self) -> None:
         if not self._bridge.active:
             return
-        now = time.monotonic()
         for fp in list(self.bots.values()):
-            if fp.sim_last_seen_at > 0 and now - fp.sim_last_seen_at <= 15.0:
+            if fp.sim_spawn_confirmed or fp.is_recently_seen():
                 continue
-            fp.sim_spawn_confirmed = False
             self.spawn(fp)
 
     def reconcile_names(self, names: set[str]) -> None:
@@ -227,10 +271,7 @@ class FakeBotManager:
         except (TypeError, ValueError):
             return
         dimension = str(dimension or fp.dimension).replace("minecraft:", "")
-        old_seen = fp.sim_last_seen_at
         fp.mark_seen(nx, ny, nz, dimension)
-        if old_seen <= 0:
-            self._logger.info(f"假人 {fp.name} 已上线并开始上报位置。")
 
     def guard_positions(self) -> None:
         if not self._bridge.active or not self._settings.guard_enabled:
@@ -243,41 +284,17 @@ class FakeBotManager:
             dy = fp.sim_actual_y - fp.location_y
             dz = fp.sim_actual_z - fp.location_z
             if dx * dx + dy * dy + dz * dz > threshold_sq:
-                self._bridge.send_bridge("teleport", {
-                    "n": fp.name,
-                    "x": fp.location_x,
-                    "y": fp.location_y,
-                    "z": fp.location_z,
-                    "d": fp.dimension,
-                    "pitch": fp.pitch,
-                    "yaw": fp.yaw,
-                })
+                self._bridge.send_bridge("teleport", self._pose_payload(fp))
 
     def move_here(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
         if not self.can_manage(sender, fp):
             return False, "你没有权限管理该假人。"
         if not self._bridge.active:
             return False, "行为包桥接未就绪。"
-        loc = getattr(sender, "location", None)
-        if loc is None:
+        if not self._capture_player_pose(sender, fp):
             return False, "该操作需要玩家位置。"
-        fp.location_x = round(float(loc.x), 2)
-        fp.location_y = round(float(loc.y), 2)
-        fp.location_z = round(float(loc.z), 2)
-        fp.dimension = self._plugin.dimension_id(loc.dimension)
-        fp.pitch = round(float(getattr(loc, "pitch", 0.0)), 2)
-        fp.yaw = round(float(getattr(loc, "yaw", 0.0)), 2)
-        fp.sim_has_position = False
         self.save()
-        self._bridge.send_bridge("teleport", {
-            "n": fp.name,
-            "x": fp.location_x,
-            "y": fp.location_y,
-            "z": fp.location_z,
-            "d": fp.dimension,
-            "pitch": fp.pitch,
-            "yaw": fp.yaw,
-        })
+        self._bridge.send_bridge("teleport", self._pose_payload(fp))
         return True, f"已将 {fp.name} 移到你的位置并同步视角。"
 
     def throw_trident_here(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
@@ -285,31 +302,16 @@ class FakeBotManager:
             return False, "你没有权限管理该假人。"
         if not self._bridge.active:
             return False, "行为包桥接未就绪。"
-        loc = getattr(sender, "location", None)
-        if loc is None:
+        if not self._capture_player_pose(sender, fp):
             return False, "该操作需要玩家位置。"
-
-        fp.location_x = round(float(loc.x), 2)
-        fp.location_y = round(float(loc.y), 2)
-        fp.location_z = round(float(loc.z), 2)
-        fp.dimension = self._plugin.dimension_id(loc.dimension)
-        fp.pitch = round(float(getattr(loc, "pitch", 0.0)), 2)
-        fp.yaw = round(float(getattr(loc, "yaw", 0.0)), 2)
-        fp.sim_has_position = False
         self.save()
 
-        ok = self._bridge.send_bridge("trident", {
-            "n": fp.name,
-            "x": fp.location_x,
-            "y": fp.location_y,
-            "z": fp.location_z,
-            "d": fp.dimension,
-            "pitch": fp.pitch,
-            "yaw": fp.yaw,
-        })
+        payload = self._pose_payload(fp)
+        payload["r"] = str(getattr(sender, "name", "") or "")
+        ok = self._bridge.send_bridge("trident", payload)
         if not ok:
             return False, "三叉戟投掷指令发送失败。"
-        return True, f"已让 {fp.name} 按你当前的位置和视角投掷三叉戟。"
+        return True, f"已请求 {fp.name} 按你当前的位置和视角投掷背包中的三叉戟。"
 
     def teleport_to(self, fp: FakePlayer, x: float, y: float, z: float, dimension: str) -> tuple[bool, str]:
         if not self._bridge.active:
@@ -320,15 +322,7 @@ class FakeBotManager:
         fp.dimension = dimension
         fp.sim_has_position = False
         self.save()
-        self._bridge.send_bridge("teleport", {
-            "n": fp.name,
-            "x": fp.location_x,
-            "y": fp.location_y,
-            "z": fp.location_z,
-            "d": dimension,
-            "pitch": fp.pitch,
-            "yaw": fp.yaw,
-        })
+        self._bridge.send_bridge("teleport", self._pose_payload(fp))
         return True, f"已移动 {fp.name}。"
 
     def remove(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
@@ -359,8 +353,6 @@ class FakeBotManager:
     def status_text(self, fp: FakePlayer) -> str:
         if not self._bridge.active:
             return "桥接离线"
-        if fp.is_recently_seen():
+        if fp.is_recently_seen() or fp.sim_spawn_confirmed:
             return "在线"
-        if fp.sim_spawn_confirmed:
-            return "等待位置上报"
         return "等待生成"
