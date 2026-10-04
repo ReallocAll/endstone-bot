@@ -316,6 +316,47 @@ function doRemove(nameValue) {
     finishRemove(name, sim);
 }
 
+function verifyViewSync(name, sim, pose) {
+    system.runTimeout(() => {
+        try {
+            const expected = {
+                x: Number(pose.dx ?? 0),
+                y: Number(pose.dy ?? 0),
+                z: Number(pose.dz ?? 0),
+            };
+            const expectedLen = Math.sqrt(
+                expected.x * expected.x +
+                expected.y * expected.y +
+                expected.z * expected.z
+            );
+            if (!Number.isFinite(expectedLen) || expectedLen <= 1e-8) return;
+
+            const actual = sim.getViewDirection();
+            const actualLen = Math.sqrt(
+                actual.x * actual.x +
+                actual.y * actual.y +
+                actual.z * actual.z
+            );
+            if (!Number.isFinite(actualLen) || actualLen <= 1e-8) return;
+
+            const dot = (
+                expected.x * actual.x +
+                expected.y * actual.y +
+                expected.z * actual.z
+            ) / (expectedLen * actualLen);
+
+            if (dot < 0.98) {
+                console.warn(
+                    `[EndstoneBot] view sync mismatch [${name}]: dot=${dot.toFixed(4)} ` +
+                    `expected=(${expected.x.toFixed(4)},${expected.y.toFixed(4)},${expected.z.toFixed(4)}) ` +
+                    `actual=(${actual.x.toFixed(4)},${actual.y.toFixed(4)},${actual.z.toFixed(4)})`
+                );
+            }
+        } catch (e) {
+            console.warn(`[EndstoneBot] view sync verification failed [${name}]: ${e}`);
+        }
+    }, 1);
+}
 function doTeleport(req) {
     const name = String(req.n || "");
     const pose = rememberPose(req);
@@ -332,6 +373,7 @@ function doTeleport(req) {
     }
     try {
         teleportSim(sim, pose);
+        verifyViewSync(name, sim, pose);
         reply("bot:teleported", { n: name });
     } catch (e) {
         reply("bot:error", { n: name, e: `teleport failed: ${String(e)}` });
