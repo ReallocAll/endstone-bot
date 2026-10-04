@@ -27,6 +27,13 @@ class ManagerSourceTests(unittest.TestCase):
         block = self.plugin_source[start:end]
         self.assertIn("self.register_events(self)", block)
 
+    def test_plugin_event_annotations_are_runtime_classes(self):
+        # Endstone 0.11 validates inspect.signature() annotations directly and
+        # rejects postponed string annotations for Event subclasses.
+        self.assertNotIn("from __future__ import annotations", self.plugin_source)
+        self.assertIn("def on_player_join(self, event: PlayerJoinEvent) -> None:", self.plugin_source)
+        self.assertIn("def on_script_message(self, event: ScriptMessageEvent) -> None:", self.plugin_source)
+
     def test_bridge_dispatch_uses_quiet_command_sender_wrapper(self):
         self.assertIn("CommandSenderWrapper", self.plugin_source)
         self.assertIn("on_message=lambda _message: None", self.plugin_source)
