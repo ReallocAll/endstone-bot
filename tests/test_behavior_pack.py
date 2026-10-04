@@ -37,6 +37,21 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertNotIn("GameTest.spawnSimulatedPlayer", self.source)
         self.assertIn("gametest run endstone_bot:sim_spawner", self.source)
 
+    def test_spawn_helper_does_not_hide_initial_teleport_failure(self):
+        start = self.source.index("function spawnWithTestApi(req)")
+        end = self.source.index("\nfunction isDeadSim(", start)
+        block = self.source[start:end]
+        self.assertNotIn("teleportSim(", block)
+
+    def test_new_spawn_disconnects_if_initial_teleport_fails(self):
+        start = self.source.index("function doSpawn(req)")
+        end = self.source.index("\nfunction finishRemove(", start)
+        block = self.source[start:end]
+        self.assertIn("initial SimulatedPlayer teleport failed", block)
+        self.assertIn("try { sim.disconnect(); } catch (_) {}", block)
+        self.assertIn("desiredPoses.delete(name)", block)
+        self.assertIn("existing SimulatedPlayer teleport failed", block)
+
     def test_gametest_structure_is_created_at_runtime(self):
         self.assertIn('world.structureManager.createEmpty(', self.source)
         self.assertIn('StructureSaveMode.World', self.source)
