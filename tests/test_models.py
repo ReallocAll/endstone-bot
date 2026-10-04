@@ -24,7 +24,23 @@ class ModelTests(unittest.TestCase):
             "type": "entity",
         })
         self.assertEqual(fp.dimension, "nether")
+        self.assertEqual(fp.pitch, 0.0)
+        self.assertEqual(fp.yaw, 0.0)
         self.assertEqual(fp.to_record()["type"], "simulated")
+
+    def test_rotation_round_trips(self):
+        fp = FakePlayer.from_record({
+            "id": "r",
+            "name": "AimBot",
+            "ownerName": "Alice",
+            "ownerUuid": "u",
+            "location": [1, 64, 2],
+            "dimension": "overworld",
+            "rotation": [-23.5, 91.25],
+        })
+        self.assertEqual(fp.pitch, -23.5)
+        self.assertEqual(fp.yaw, 91.25)
+        self.assertEqual(fp.to_record()["rotation"], [-23.5, 91.25])
 
     def test_name_validation_blocks_command_injection(self):
         self.assertIsNotNone(validate_name('x";kill @a', set(), set()))
