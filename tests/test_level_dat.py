@@ -143,6 +143,27 @@ class LevelDatTests(unittest.TestCase):
         self.assertEqual(result.status, "rejected")
         self.assertEqual(real.read_bytes(), original)
 
+    def test_post_write_verification_failure_rolls_back_original(self):
+        original = root_level_dat(nbt.make_byte_tag_bytes("Difficulty", 2))
+        path = self._write_level(original)
+
+        real_checker = level_dat.is_beta_apis_enabled
+        level_dat.is_beta_apis_enabled = lambda _: False
+        try:
+            result = level_dat.enable_beta_apis_safely(
+                path,
+                backup_root=self.backups,
+                world_name="world",
+            )
+        finally:
+            level_dat.is_beta_apis_enabled = real_checker
+
+        self.assertEqual(result.status, "rolled-back")
+        self.assertFalse(result.changed)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertIsNotNone(result.backup_path)
+        self.assertEqual(result.backup_path.read_bytes(), original)
+
     def test_resolver_uses_only_server_properties_level_name(self):
         server_root = self.root / "server"
         world = server_root / "worlds" / "chosen"
