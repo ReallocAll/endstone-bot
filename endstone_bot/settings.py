@@ -7,7 +7,7 @@ from typing import Any
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 2,
+    "version": 3,
     "limits": {
         "max_total": 6,
         "max_per_player": 1,
