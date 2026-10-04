@@ -21,8 +21,9 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertNotIn("sim.setItem(trident", self.source)
         self.assertNotIn("ItemStack,", self.source)
 
-    def test_view_direction_uses_look_at(self):
-        self.assertIn("sim.lookAt({", self.source)
+    def test_view_direction_uses_simulated_player_controller(self):
+        self.assertIn("sim.lookAtLocation(target", self.source)
+        self.assertIn("LookDuration?.Instant", self.source)
         self.assertIn("req.dx", self.source)
         self.assertIn("req.dy", self.source)
         self.assertIn("req.dz", self.source)
