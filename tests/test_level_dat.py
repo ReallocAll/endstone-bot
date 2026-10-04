@@ -11,6 +11,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+package = types.ModuleType("endstone_bot")
+package.__path__ = [str(ROOT / "endstone_bot")]
+sys.modules.setdefault("endstone_bot", package)
+
 
 def load_module(name: str, relative: str):
     spec = importlib.util.spec_from_file_location(name, ROOT / relative)
