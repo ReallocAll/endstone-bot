@@ -50,7 +50,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 0, 3]
+    BEHAVIOR_PACK_VERSION = [4, 0, 4]
 
     def on_enable(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -99,7 +99,7 @@ class BotPlugin(Plugin):
             self._bridge_warning_sent = False
         elif not self._bridge_warning_sent and self._tick_counter >= 100:
             self.logger.warning(
-                "行为包尚未连接：首次安装/升级后请完整重启，并确认世界已手动启用 Beta APIs。"
+                "行为包桥接尚未建立：请检查 Scripting/EndstoneBot 回调日志；首次安装或升级行为包后需要完整重启。"
             )
             self._bridge_warning_sent = True
 
