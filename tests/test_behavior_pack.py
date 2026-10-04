@@ -44,8 +44,12 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn('world.structureManager.get(structureId)', self.source)
         self.assertIn('startSimulatedPlayerGameTest()', self.source)
 
-    def test_native_aim_does_not_use_gametest_relative_body_rotation(self):
-        self.assertIn("sim.lookAtLocation(target", self.source)
+    def test_native_aim_uses_entity_controller_target(self):
+        self.assertIn('spawnEntity("minecraft:armor_stand"', self.source)
+        self.assertIn("sim.lookAtEntity(", self.source)
+        self.assertIn('GameTest.LookDuration?.Continuous', self.source)
+        self.assertIn('target.addEffect("invisibility"', self.source)
+        self.assertIn("removeAimTarget(aimTarget)", self.source)
         self.assertNotIn("sim.setBodyRotation(", self.source)
 
     def test_trident_refuses_other_players_within_one_block(self):
