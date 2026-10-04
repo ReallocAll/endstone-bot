@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from endstone.command import Command, CommandSender
+
+try:
+    from endstone.command import CommandSenderWrapper
+except ImportError:  # Compatibility with older Endstone 0.11 builds.
+    CommandSenderWrapper = None
 from endstone.event import PlayerJoinEvent, ScriptMessageEvent, event_handler
 from endstone.plugin import Plugin
 
@@ -51,7 +56,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 2, 6]
+    BEHAVIOR_PACK_VERSION = [4, 2, 7]
 
     def on_load(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -61,6 +66,13 @@ class BotPlugin(Plugin):
         self.data_folder.mkdir(parents=True, exist_ok=True)
         if not hasattr(self, "settings"):
             self.settings = SettingsManager(self.data_folder, self.logger)
+        self._bridge_command_sender = self.server.command_sender
+        if CommandSenderWrapper is not None:
+            self._bridge_command_sender = CommandSenderWrapper(
+                self.server.command_sender,
+                on_message=lambda _message: None,
+                on_error=self._on_bridge_command_error,
+            )
         self.bridge = BridgeManager(self.logger, self._dispatch)
         self.manager = FakeBotManager(
             self, self.data_folder, self.bridge, self.settings, self.logger
@@ -519,9 +531,13 @@ class BotPlugin(Plugin):
             return "the_end"
         return "overworld"
 
+    def _on_bridge_command_error(self, message: Any) -> None:
+        self.logger.warning(f"bridge 命令执行失败: {message}")
+
     def _dispatch(self, command: str) -> bool:
         try:
-            return bool(self.server.dispatch_command(self.server.command_sender, command))
+            sender = getattr(self, "_bridge_command_sender", self.server.command_sender)
+            return bool(self.server.dispatch_command(sender, command))
         except Exception as exc:
             self.logger.debug(f"命令执行失败 /{command}: {exc}")
             return False
