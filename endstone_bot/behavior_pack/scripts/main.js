@@ -114,14 +114,9 @@ function reply(eventId, data) {
         return false;
     }
     try {
-        const result = world.getDimension("overworld").runCommand(
+        world.getDimension("overworld").runCommand(
             `botbridge ${eventName} ${encoded}`
         );
-        if (eventId === "bot:hello_ack") {
-            console.log(
-                `[EndstoneBot] botbridge hello_ack dispatched, successCount=${String(result?.successCount ?? "unknown")}`
-            );
-        }
         return true;
     } catch (e) {
         console.warn(`[EndstoneBot] callback failed (${eventId}): ${e}`);
@@ -743,9 +738,6 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
 
     if (event.id === "bot:hello") {
         const kind = sourceKind(event) || "unknown";
-        console.log(
-            `[EndstoneBot] hello received: sourceType=${kind}, messageLength=${String(event.message ?? "").length}`
-        );
         if (!isTrustedServerSource(event)) {
             console.warn(`[EndstoneBot] rejected hello from sourceType=${kind}`);
             return;
@@ -889,4 +881,3 @@ system.runInterval(() => {
     flushPositions(report);
 }, 100);
 
-console.log(`[EndstoneBot] bridge loaded, protocol=${PROTOCOL}`);
