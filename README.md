@@ -12,7 +12,8 @@
 - `/bot` 直接打开玩家 GUI，适合 ClockMenu 只执行一个命令接入。
 - 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
 - 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
-- 玩家可以把自己的当前位置和视角同步给假人，并让假人按该姿态投掷一把普通三叉戟；不自动瞄准、不循环投掷。\n- 假人死亡后会通过 SimulatedPlayer.respawn() 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
+- 玩家可以把自己的当前位置和世界空间视线方向同步给假人；投掷三叉戟时只会扫描并使用假人背包里已经存在的 `minecraft:trident`，不会生成或补充物品，也不自动瞄准、不循环投掷。
+- 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
 - 不自动修改 `level.dat`。找不到精确世界目录时 fail closed，不猜测其他世界。
 
@@ -118,7 +119,7 @@ SimulatedPlayer 依赖 Beta APIs。如果行为包桥接未建立，日志会提
 
 ## 数据
 
-- `bots.json`：持久化假人定义、挂机锚点和 pitch/yaw。
+- `bots.json`：持久化假人定义、挂机锚点、pitch/yaw 和世界空间视线方向。
 - `config.json`：全局资源限制。
 - `player_limits.json`：玩家级例外。
 
