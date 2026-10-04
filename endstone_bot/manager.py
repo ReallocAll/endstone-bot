@@ -282,8 +282,6 @@ class FakeBotManager:
             return False, "你没有权限管理该假人。"
         if not self._bridge.active:
             return False, "行为包桥接未就绪。"
-        if not fp.sim_spawn_confirmed:
-            return False, "假人尚未上线，请稍后再试。"
         loc = getattr(sender, "location", None)
         if loc is None:
             return False, "该操作需要玩家位置。"
