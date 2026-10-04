@@ -6,12 +6,12 @@
  * - the first valid bot:hello establishes the per-process token
  * - every later command must carry the exact same token and protocol
  *
- * Protocol 2 intentionally keeps the bridge small: spawn/remove/teleport/list/clear,
- * heartbeat, spawn acknowledgements, loss notifications, and batched positions.
+ * Protocol 2 intentionally keeps the bridge small: spawn/remove/teleport/trident/list/clear,
+ * heartbeat, lifecycle acknowledgements, loss notifications, and batched positions.
  */
 
 import * as GameTest from "@minecraft/server-gametest";
-import { GameMode, ItemStack, system, world } from "@minecraft/server";
+import { GameMode, system, world } from "@minecraft/server";
 
 const PROTOCOL = 2;
 const MAX_MESSAGE_CHARS = 1400;
@@ -80,6 +80,9 @@ function rememberPose(req) {
         d: dimensionId(req.d),
         pitch: Number(req.pitch ?? 0),
         yaw: Number(req.yaw ?? 0),
+        dx: Number(req.dx ?? 0),
+        dy: Number(req.dy ?? 0),
+        dz: Number(req.dz ?? 0),
     };
     if (name) desiredPoses.set(name, pose);
     return pose;
@@ -140,16 +143,38 @@ function poseRotation(req) {
     return { x: pitch, y: yaw };
 }
 
-function teleportSim(sim, req) {
-    const dimension = getDimension(req.d);
+function orientSim(sim, req) {
+    const dx = Number(req.dx ?? 0);
+    const dy = Number(req.dy ?? 0);
+    const dz = Number(req.dz ?? 0);
+    const lengthSq = dx * dx + dy * dy + dz * dz;
+
+    if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
+        try {
+            const head = sim.getHeadLocation();
+            const invLength = 1 / Math.sqrt(lengthSq);
+            sim.lookAt({
+                x: head.x + dx * invLength * 32,
+                y: head.y + dy * invLength * 32,
+                z: head.z + dz * invLength * 32,
+            });
+            return;
+        } catch (_) {}
+    }
+
     const rotation = poseRotation(req);
-    sim.teleport(
-        { x: Number(req.x), y: Number(req.y), z: Number(req.z) },
-        { dimension, rotation },
-    );
     try {
         sim.setRotation(rotation);
     } catch (_) {}
+}
+
+function teleportSim(sim, req) {
+    const dimension = getDimension(req.d);
+    sim.teleport(
+        { x: Number(req.x), y: Number(req.y), z: Number(req.z) },
+        { dimension },
+    );
+    orientSim(sim, req);
 }
 
 function spawnWithGlobalApi(req) {
@@ -349,13 +374,37 @@ function doTeleport(req) {
     }
 }
 
-function finishTrident(name, sim) {
+function findTridentSlot(sim) {
+    try {
+        const inventory = sim.getComponent("minecraft:inventory");
+        const container = inventory?.container;
+        if (!container || !container.isValid) return -1;
+        for (let slot = 0; slot < container.size; slot++) {
+            const item = container.getItem(slot);
+            if (item && item.typeId === "minecraft:trident") {
+                return slot;
+            }
+        }
+    } catch (_) {}
+    return -1;
+}
+
+function tridentResult(name, requester, ok, reason = "") {
+    reply("bot:trident_result", {
+        n: name,
+        r: String(requester || ""),
+        ok: Boolean(ok),
+        reason: String(reason || ""),
+    });
+}
+
+function finishTrident(name, requester, sim) {
     system.runTimeout(() => {
         try {
             sim.stopUsingItem();
-            reply("bot:trident_thrown", { n: name, ok: true });
+            tridentResult(name, requester, true);
         } catch (e) {
-            reply("bot:error", { n: name, e: `trident release failed: ${String(e)}` });
+            tridentResult(name, requester, false, `release_failed:${String(e)}`);
         } finally {
             tridentBusy.delete(name);
         }
@@ -364,49 +413,54 @@ function finishTrident(name, sim) {
 
 function doThrowTrident(req) {
     const name = String(req.n || "");
+    const requester = String(req.r || "");
     const pose = rememberPose(req);
     const sim = simulatedPlayers.get(name);
     if (!sim) {
-        reply("bot:error", { n: name, e: "SimulatedPlayer not found" });
+        tridentResult(name, requester, false, "not_found");
         return;
     }
     if (isDeadSim(name, sim)) {
         if (!respawnTracked(name, sim, pose)) {
-            reply("bot:error", { n: name, e: "failed to respawn before trident action" });
+            tridentResult(name, requester, false, "respawn_failed");
+        } else {
+            tridentResult(name, requester, false, "respawning");
         }
         return;
     }
     if (tridentBusy.has(name)) {
-        reply("bot:error", { n: name, e: "trident action already in progress" });
+        tridentResult(name, requester, false, "busy");
+        return;
+    }
+
+    const slot = findTridentSlot(sim);
+    if (slot < 0) {
+        tridentResult(name, requester, false, "no_trident");
         return;
     }
 
     tridentBusy.add(name);
     try {
         teleportSim(sim, pose);
-        const trident = new ItemStack("minecraft:trident", 1);
-        if (!sim.setItem(trident, 0, true)) {
-            tridentBusy.delete(name);
-            reply("bot:error", { n: name, e: "failed to equip trident" });
-            return;
-        }
     } catch (e) {
         tridentBusy.delete(name);
-        reply("bot:error", { n: name, e: `trident setup failed: ${String(e)}` });
+        tridentResult(name, requester, false, `pose_failed:${String(e)}`);
         return;
     }
 
     system.runTimeout(() => {
         try {
-            if (!sim.useItemInSlot(0)) {
+            // Re-apply the exact world-space look direction immediately before use.
+            orientSim(sim, pose);
+            if (!sim.useItemInSlot(slot)) {
                 tridentBusy.delete(name);
-                reply("bot:error", { n: name, e: "failed to start using trident" });
+                tridentResult(name, requester, false, "use_failed");
                 return;
             }
-            finishTrident(name, sim);
+            finishTrident(name, requester, sim);
         } catch (e) {
             tridentBusy.delete(name);
-            reply("bot:error", { n: name, e: `trident use failed: ${String(e)}` });
+            tridentResult(name, requester, false, `use_failed:${String(e)}`);
         }
     }, 1);
 }
