@@ -144,18 +144,63 @@ function poseRotation(req) {
     return { x: pitch, y: yaw };
 }
 
-function applySavedPitch(sim, req) {
-    const wanted = poseRotation(req);
+function savedPitch(req) {
+    const dx = Number(req.dx ?? 0);
+    const dy = Number(req.dy ?? 0);
+    const dz = Number(req.dz ?? 0);
+    const lengthSq = dx * dx + dy * dy + dz * dz;
+    if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
+        const ny = dy / Math.sqrt(lengthSq);
+        return -Math.asin(Math.max(-1, Math.min(1, ny))) * 180 / Math.PI;
+    }
+    return poseRotation(req).x;
+}
+
+function setPitchPreservingYaw(sim, pitch) {
+    const current = sim.getRotation();
+    sim.setRotation({
+        x: Math.max(-90, Math.min(90, Number(pitch))),
+        y: Number(current.y),
+    });
+}
+
+function convergeSavedPitch(sim, req, attempt = 0) {
+    const name = String(req.n || "");
+    if (name && desiredPoses.get(name) !== req) return;
+
     try {
+        const targetPitch = savedPitch(req);
         const current = sim.getRotation();
-        // Keep the yaw that the already-verified world-space lookAt() produced.
-        // Only x is replaced: Entity.setRotation documents x as head pitch and
-        // y as body yaw for player-like entities.
-        sim.setRotation({
-            x: wanted.x,
-            y: Number(current.y),
-        });
+        const actualPitch = Number(current.x);
+        const error = targetPitch - actualPitch;
+
+        if (Math.abs(error) <= 0.5) return;
+        if (attempt >= 4) return;
+
+        // BDS 26.51 can settle SimulatedPlayer pitch away from the requested
+        // value on the following controller tick. Feed the measured error back
+        // into the next request instead of assuming a fixed offset.
+        const compensatedPitch = targetPitch + error;
+        setPitchPreservingYaw(sim, compensatedPitch);
+
+        system.runTimeout(() => {
+            try {
+                if (sim.isValid) convergeSavedPitch(sim, req, attempt + 1);
+            } catch (_) {}
+        }, 1);
     } catch (_) {}
+}
+
+function applySavedPitch(sim, req) {
+    try {
+        setPitchPreservingYaw(sim, savedPitch(req));
+    } catch (_) {}
+
+    system.runTimeout(() => {
+        try {
+            if (sim.isValid) convergeSavedPitch(sim, req, 0);
+        } catch (_) {}
+    }, 1);
 }
 
 function orientSim(sim, req) {
@@ -191,15 +236,6 @@ function teleportSim(sim, req) {
         { dimension },
     );
     orientSim(sim, req);
-
-    // SimulatedPlayer may commit its controller/teleport state at the end of the
-    // current tick. Re-apply pitch once on the next tick while preserving the
-    // yaw that is already correct.
-    system.runTimeout(() => {
-        try {
-            if (sim.isValid) applySavedPitch(sim, req);
-        } catch (_) {}
-    }, 1);
 }
 
 
@@ -384,7 +420,7 @@ function verifyViewSync(name, sim, pose) {
         } catch (e) {
             console.warn(`[EndstoneBot] view sync verification failed [${name}]: ${e}`);
         }
-    }, 2);
+    }, 7);
 }
 function doTeleport(req) {
     const name = String(req.n || "");
