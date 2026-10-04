@@ -11,7 +11,7 @@
  */
 
 import * as GameTest from "@minecraft/server-gametest";
-import { ItemStack, system, world } from "@minecraft/server";
+import { GameMode, ItemStack, system, world } from "@minecraft/server";
 
 const PROTOCOL = 2;
 const MAX_MESSAGE_CHARS = 1400;
@@ -21,6 +21,8 @@ let activeTest = null;
 const simulatedPlayers = new Map();
 const pendingSpawns = [];
 const tridentBusy = new Set();
+const deadPlayers = new Set();
+const desiredPoses = new Map();
 
 function sourceKind(event) {
     try {
@@ -66,6 +68,21 @@ function dimensionId(value) {
 
 function getDimension(value) {
     return world.getDimension(dimensionId(value));
+}
+
+function rememberPose(req) {
+    const name = String(req.n || "");
+    const pose = {
+        n: name,
+        x: Number(req.x),
+        y: Number(req.y),
+        z: Number(req.z),
+        d: dimensionId(req.d),
+        pitch: Number(req.pitch ?? 0),
+        yaw: Number(req.yaw ?? 0),
+    };
+    if (name) desiredPoses.set(name, pose);
+    return pose;
 }
 
 function utf8Hex(text) {
@@ -147,15 +164,18 @@ function spawnWithGlobalApi(req) {
     };
     const name = String(req.n);
 
-    // Current 2.x API requires gameMode. Accept the current enum value first,
-    // then the legacy lower-case value for older beta builds.
+    // Current 2.x API requires GameMode. Keep string fallbacks for older beta builds.
     try {
-        return fn(location, name, "Survival");
+        return fn(location, name, GameMode.Survival);
     } catch (currentError) {
         try {
-            return fn(location, name, "survival");
+            return fn(location, name, "Survival");
         } catch (_) {
-            throw currentError;
+            try {
+                return fn(location, name, "survival");
+            } catch (_) {
+                throw currentError;
+            }
         }
     }
 }
@@ -167,18 +187,62 @@ function spawnWithTestApi(req) {
     return sim;
 }
 
+function finishRespawn(name, sim, pose) {
+    system.runTimeout(() => {
+        try {
+            teleportSim(sim, pose);
+            deadPlayers.delete(name);
+            tridentBusy.delete(name);
+            reply("bot:spawned", { n: name, ok: true, respawned: true });
+        } catch (e) {
+            try { sim.disconnect(); } catch (_) {}
+            if (simulatedPlayers.get(name) === sim) simulatedPlayers.delete(name);
+            deadPlayers.delete(name);
+            tridentBusy.delete(name);
+            reply("bot:lost", { n: name, reason: "respawn_failed", e: String(e) });
+        }
+    }, 1);
+}
+
+function respawnTracked(name, sim, pose) {
+    if (!sim || !deadPlayers.has(name)) return false;
+    try {
+        const ok = sim.respawn();
+        if (!ok) {
+            throw new Error("SimulatedPlayer.respawn returned false");
+        }
+        finishRespawn(name, sim, pose);
+        return true;
+    } catch (e) {
+        try { sim.disconnect(); } catch (_) {}
+        if (simulatedPlayers.get(name) === sim) simulatedPlayers.delete(name);
+        deadPlayers.delete(name);
+        tridentBusy.delete(name);
+        reply("bot:lost", { n: name, reason: "respawn_failed", e: String(e) });
+        return false;
+    }
+}
+
 function doSpawn(req) {
     const name = String(req.n || "");
     if (!name) return;
+    const pose = rememberPose(req);
     const existing = simulatedPlayers.get(name);
     if (existing) {
         try {
             if (existing.isValid) {
+                if (deadPlayers.has(name)) {
+                    respawnTracked(name, existing, pose);
+                    return;
+                }
+                teleportSim(existing, pose);
                 reply("bot:spawned", { n: name, ok: true, existed: true });
                 return;
             }
         } catch (_) {}
         simulatedPlayers.delete(name);
+        deadPlayers.delete(name);
+        tridentBusy.delete(name);
     }
 
     let sim = null;
@@ -211,6 +275,8 @@ function doSpawn(req) {
     }
 
     simulatedPlayers.set(name, sim);
+    deadPlayers.delete(name);
+    teleportSim(sim, pose);
     reply("bot:spawned", { n: name, ok: true });
 }
 
@@ -245,13 +311,20 @@ function doRemove(nameValue) {
 
 function doTeleport(req) {
     const name = String(req.n || "");
+    const pose = rememberPose(req);
     const sim = simulatedPlayers.get(name);
     if (!sim) {
         reply("bot:error", { n: name, e: "SimulatedPlayer not found" });
         return;
     }
+    if (deadPlayers.has(name)) {
+        if (!respawnTracked(name, sim, pose)) {
+            reply("bot:error", { n: name, e: "failed to respawn SimulatedPlayer" });
+        }
+        return;
+    }
     try {
-        teleportSim(sim, req);
+        teleportSim(sim, pose);
         reply("bot:teleported", { n: name });
     } catch (e) {
         reply("bot:error", { n: name, e: `teleport failed: ${String(e)}` });
@@ -273,9 +346,16 @@ function finishTrident(name, sim) {
 
 function doThrowTrident(req) {
     const name = String(req.n || "");
+    const pose = rememberPose(req);
     const sim = simulatedPlayers.get(name);
     if (!sim) {
         reply("bot:error", { n: name, e: "SimulatedPlayer not found" });
+        return;
+    }
+    if (deadPlayers.has(name)) {
+        if (!respawnTracked(name, sim, pose)) {
+            reply("bot:error", { n: name, e: "failed to respawn before trident action" });
+        }
         return;
     }
     if (tridentBusy.has(name)) {
@@ -285,7 +365,7 @@ function doThrowTrident(req) {
 
     tridentBusy.add(name);
     try {
-        teleportSim(sim, req);
+        teleportSim(sim, pose);
         const trident = new ItemStack("minecraft:trident", 1);
         if (!sim.setItem(trident, 0, true)) {
             tridentBusy.delete(name);
@@ -321,13 +401,15 @@ function clearAll() {
         } catch (_) {}
         simulatedPlayers.delete(name);
         tridentBusy.delete(name);
+        deadPlayers.delete(name);
+        desiredPoses.delete(name);
     }
     pendingSpawns.length = 0;
     reply("bot:cleared", { count: entries.length });
 }
 
 function sendList() {
-    const names = Array.from(simulatedPlayers.keys());
+    const names = Array.from(simulatedPlayers.keys()).filter((name) => !deadPlayers.has(name));
     if (names.length === 0) {
         reply("bot:list_result", { reset: true, done: true, names: [] });
         return;
@@ -438,13 +520,53 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
     }
 });
 
+function trackedNameForEntity(entity) {
+    let entityId = "";
+    let entityName = "";
+    try { entityId = String(entity?.id || ""); } catch (_) {}
+    try { entityName = String(entity?.name || ""); } catch (_) {}
+
+    for (const [name, sim] of simulatedPlayers.entries()) {
+        try {
+            if (entityId && String(sim.id || "") === entityId) return name;
+        } catch (_) {}
+        try {
+            if (entityName && String(sim.name || "") === entityName) return name;
+        } catch (_) {}
+    }
+    return "";
+}
+
+try {
+    world.afterEvents.entityDie.subscribe((event) => {
+        const name = trackedNameForEntity(event.deadEntity);
+        if (!name) return;
+        const sim = simulatedPlayers.get(name);
+        if (!sim) return;
+
+        deadPlayers.add(name);
+        tridentBusy.delete(name);
+        reply("bot:lost", { n: name, reason: "dead" });
+
+        const pose = desiredPoses.get(name);
+        if (!pose) return;
+        system.runTimeout(() => {
+            if (simulatedPlayers.get(name) !== sim || !deadPlayers.has(name)) return;
+            respawnTracked(name, sim, pose);
+        }, 1);
+    });
+} catch (e) {
+    console.warn(`[EndstoneBot] entityDie subscription failed: ${e}`);
+}
+
 try {
     world.afterEvents.playerLeave.subscribe((event) => {
         const name = String(event.playerName || "");
         if (simulatedPlayers.has(name)) {
             simulatedPlayers.delete(name);
             tridentBusy.delete(name);
-            reply("bot:lost", { n: name });
+            deadPlayers.delete(name);
+            reply("bot:lost", { n: name, reason: "left" });
         }
     });
 } catch (_) {}
@@ -458,10 +580,13 @@ system.runInterval(() => {
     if (!bridgeToken || simulatedPlayers.size === 0) return;
     const report = [];
     for (const [name, sim] of Array.from(simulatedPlayers.entries())) {
+        if (deadPlayers.has(name)) continue;
         try {
             if (!sim.isValid) {
                 simulatedPlayers.delete(name);
-                reply("bot:lost", { n: name });
+                deadPlayers.delete(name);
+                tridentBusy.delete(name);
+                reply("bot:lost", { n: name, reason: "invalid" });
                 continue;
             }
             const loc = sim.location;
@@ -474,7 +599,9 @@ system.runInterval(() => {
             });
         } catch (_) {
             simulatedPlayers.delete(name);
-            reply("bot:lost", { n: name });
+            deadPlayers.delete(name);
+            tridentBusy.delete(name);
+            reply("bot:lost", { n: name, reason: "position_error" });
         }
     }
     flushPositions(report);
