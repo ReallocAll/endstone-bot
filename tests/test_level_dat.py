@@ -5,6 +5,7 @@ import os
 import struct
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
