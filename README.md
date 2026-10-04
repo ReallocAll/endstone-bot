@@ -153,7 +153,7 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 - `/reload` 时使用经过认证的 `bot:shutdown` 清理远端 SimulatedPlayer 并释放旧 token。
 - heartbeat 超时后插件真正进入断开状态。
 - 坐标和列表按消息长度分批，避免撞 `/scriptevent` 2048 字符上限。
-- 优先使用模块级 `spawnSimulatedPlayer(DimensionLocation, ...)`；若当前 BDS 没有该接口，则回退到长生命周期 GameTest，并生成后传送到目标绝对世界坐标和维度。
+- SimulatedPlayer 统一由长生命周期 GameTest 的 `Test.spawnSimulatedPlayer` 创建；GameTest 所需的 1×1×1 空结构由 Script API 在运行时创建并保存到 World，不再打包静态 `.mcstructure`。
 
 ## 数据
 
