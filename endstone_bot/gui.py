@@ -22,15 +22,15 @@ class BotGUI:
         form = ActionForm(
             title="§l§b假人管理",
             content=(
-                f"§7桥接：{bridge}§r\n"
-                f"§7我的假人：§f{len(owned)}§7 / §f{max_text}\n"
-                f"§7全服假人：§f{len(self._plugin.manager.bots)}§7 / §f{self._plugin.settings.max_total}"
+                f"桥接：{bridge}§r\n"
+                f"我的假人：§f{len(owned)} / §f{max_text}\n"
+                f"全服假人：§f{len(self._plugin.manager.bots)} / §f{self._plugin.settings.max_total}"
             ),
         )
-        form.add_button("§a创建假人\n§7在当前位置创建", on_click=lambda p: self.open_create(p))
-        form.add_button(f"§e我的假人 §7({len(owned)})\n§7查看、移动或删除", on_click=lambda p: self.open_my_bots(p))
+        form.add_button("§a创建假人\n在当前位置创建", on_click=lambda p: self.open_create(p))
+        form.add_button(f"§e我的假人 ({len(owned)})\n查看、移动或删除", on_click=lambda p: self.open_my_bots(p))
         if self._plugin.is_admin(player):
-            form.add_button("§c管理员面板\n§7全服管理、玩家限制与全局设置", on_click=lambda p: self.open_admin(p))
+            form.add_button("§c管理员面板\n全服管理、玩家限制与全局设置", on_click=lambda p: self.open_admin(p))
         player.send_form(form)
 
     def open_create(self, player: Any) -> None:
@@ -66,16 +66,16 @@ class BotGUI:
         bots = self._plugin.manager.bots_for_owner(uuid, name)
         form = ActionForm(
             title="§l§e我的假人",
-            content="§7点击假人进行管理。" if bots else "§7你还没有假人。",
+            content="点击假人进行管理。" if bots else "你还没有假人。",
         )
         for fp in bots:
             status = self._plugin.manager.status_text(fp)
             form.add_button(
-                f"§b{fp.name}\n§7{status} | {fp.dimension} | {fp.location_x:.1f}, {fp.location_y:.1f}, {fp.location_z:.1f}",
+                f"§b{fp.name}\n{status} | {fp.dimension} | {fp.location_x:.1f}, {fp.location_y:.1f}, {fp.location_z:.1f}",
                 on_click=(lambda bot=fp: lambda p: self.open_bot(p, bot, False))(),
             )
         form.add_button("§a创建假人", on_click=lambda p: self.open_create(p))
-        form.add_button("§7返回", on_click=lambda p: self.open_main(p))
+        form.add_button("返回", on_click=lambda p: self.open_main(p))
         player.send_form(form)
 
     def open_bot(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
@@ -88,17 +88,17 @@ class BotGUI:
         form = ActionForm(
             title=f"§l§b{fp.name}",
             content=(
-                f"§7所有者：§f{fp.owner_name}\n"
-                f"§7状态：§f{self._plugin.manager.status_text(fp)}\n"
-                f"§7位置：§f{fp.dimension} ({fp.location_x:.1f}, {fp.location_y:.1f}, {fp.location_z:.1f})\n"
-                f"§7创建：§f{fp.created}"
+                f"所有者：§f{fp.owner_name}\n"
+                f"状态：§f{self._plugin.manager.status_text(fp)}\n"
+                f"位置：§f{fp.dimension} ({fp.location_x:.1f}, {fp.location_y:.1f}, {fp.location_z:.1f})\n"
+                f"创建：§f{fp.created}"
             ),
         )
         if can_manage:
-            form.add_button("§b移动到我这里\n§7更新挂机锚点", on_click=lambda p: self._move_here(p, fp, admin_context))
+            form.add_button("§b移动到我这里\n更新挂机锚点", on_click=lambda p: self._move_here(p, fp, admin_context))
             form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
         form.add_button(
-            "§7返回",
+            "返回",
             on_click=(lambda p: self.open_admin_bots(p)) if admin_context else (lambda p: self.open_my_bots(p)),
         )
         player.send_form(form)
@@ -113,7 +113,7 @@ class BotGUI:
             title=f"§l§c删除 {fp.name}",
             content=f"确定删除 §b{fp.name}§r 吗？该操作会同时断开对应 SimulatedPlayer。",
             button1="§c确认删除",
-            button2="§7取消",
+            button2="取消",
         )
 
         def submit(p: Any, button: int) -> None:
@@ -137,25 +137,25 @@ class BotGUI:
         bridge = "§a正常" if self._plugin.bridge.active else "§c离线"
         form = ActionForm(
             title="§l§c假人管理员",
-            content=f"§7桥接：{bridge}§r\n§7全服假人：§f{len(self._plugin.manager.bots)}",
+            content=f"桥接：{bridge}§r\n全服假人：§f{len(self._plugin.manager.bots)}",
         )
-        form.add_button("§e全服假人\n§7查看和管理全部假人", on_click=lambda p: self.open_admin_bots(p))
-        form.add_button("§6玩家限制\n§7为普通玩家调整或解除限制", on_click=lambda p: self.open_limit_players(p))
-        form.add_button("§5全局设置\n§7调整默认数量和创建冷却", on_click=lambda p: self.open_global_settings(p))
-        form.add_button("§7返回", on_click=lambda p: self.open_main(p))
+        form.add_button("§e全服假人\n查看和管理全部假人", on_click=lambda p: self.open_admin_bots(p))
+        form.add_button("§6玩家限制\n为普通玩家调整或解除限制", on_click=lambda p: self.open_limit_players(p))
+        form.add_button("§5全局设置\n调整默认数量和创建冷却", on_click=lambda p: self.open_global_settings(p))
+        form.add_button("返回", on_click=lambda p: self.open_main(p))
         player.send_form(form)
 
     def open_admin_bots(self, player: Any) -> None:
         if not self._plugin.is_admin(player):
             return
         bots = sorted(self._plugin.manager.bots.values(), key=lambda x: (x.owner_name.lower(), x.name.lower()))
-        form = ActionForm(title="§l§e全服假人", content=f"§7共 {len(bots)} 个假人。")
+        form = ActionForm(title="§l§e全服假人", content=f"共 {len(bots)} 个假人。")
         for fp in bots:
             form.add_button(
-                f"§b{fp.name}\n§7{fp.owner_name} | {self._plugin.manager.status_text(fp)}",
+                f"§b{fp.name}\n{fp.owner_name} | {self._plugin.manager.status_text(fp)}",
                 on_click=(lambda bot=fp: lambda p: self.open_bot(p, bot, True))(),
             )
-        form.add_button("§7返回管理员面板", on_click=lambda p: self.open_admin(p))
+        form.add_button("返回管理员面板", on_click=lambda p: self.open_admin(p))
         player.send_form(form)
 
     def open_limit_players(self, player: Any) -> None:
@@ -163,7 +163,7 @@ class BotGUI:
             return
         form = ActionForm(
             title="§l§6玩家限制",
-            content="§7在线玩家优先显示；也可以按名称管理离线玩家。",
+            content="在线玩家优先显示；也可以按名称管理离线玩家。",
         )
         online = sorted(list(self._plugin.server.online_players), key=lambda p: str(p.name).lower())
         for target in online:
@@ -172,14 +172,14 @@ class BotGUI:
             limits = self._plugin.settings.effective_for_key(key)
             max_text = "不限" if limits.unlimited else str(limits.max_bots)
             form.add_button(
-                f"§b{target_name}\n§7上限 {max_text} | 冷却 {limits.cooldown_seconds}s" + (" | 绕过全服" if limits.bypass_global_limit else ""),
+                f"§b{target_name}\n上限 {max_text} | 冷却 {limits.cooldown_seconds}s" + (" | 绕过全服" if limits.bypass_global_limit else ""),
                 on_click=(lambda k=key, n=target_name: lambda p: self.open_limit_menu(p, k, n))(),
             )
-        form.add_button("§e按玩家名设置\n§7可管理离线玩家", on_click=lambda p: self.open_limit_name_input(p))
+        form.add_button("§e按玩家名设置\n可管理离线玩家", on_click=lambda p: self.open_limit_name_input(p))
         overrides = self._plugin.settings.configured_overrides()
         if overrides:
-            form.add_button(f"§d已配置例外 §7({len(overrides)})", on_click=lambda p: self.open_override_list(p))
-        form.add_button("§7返回管理员面板", on_click=lambda p: self.open_admin(p))
+            form.add_button(f"§d已配置例外 ({len(overrides)})", on_click=lambda p: self.open_override_list(p))
+        form.add_button("返回管理员面板", on_click=lambda p: self.open_admin(p))
         player.send_form(form)
 
     def open_limit_name_input(self, player: Any) -> None:
@@ -205,16 +205,16 @@ class BotGUI:
         player.send_form(form)
 
     def open_override_list(self, player: Any) -> None:
-        form = ActionForm(title="§l§d已配置例外", content="§7仅显示非默认玩家限制。")
+        form = ActionForm(title="§l§d已配置例外", content="仅显示非默认玩家限制。")
         for key, rec in self._plugin.settings.configured_overrides():
             name = str(rec.get("name", "") or key)
             limits = self._plugin.settings.effective_for_key(key)
             max_text = "不限" if limits.unlimited else str(limits.max_bots)
             form.add_button(
-                f"§b{name}\n§7上限 {max_text} | 冷却 {limits.cooldown_seconds}s" + (" | 绕过全服" if limits.bypass_global_limit else ""),
+                f"§b{name}\n上限 {max_text} | 冷却 {limits.cooldown_seconds}s" + (" | 绕过全服" if limits.bypass_global_limit else ""),
                 on_click=(lambda k=key, n=name: lambda p: self.open_limit_menu(p, k, n))(),
             )
-        form.add_button("§7返回", on_click=lambda p: self.open_limit_players(p))
+        form.add_button("返回", on_click=lambda p: self.open_limit_players(p))
         player.send_form(form)
 
     def open_limit_menu(self, player: Any, key: str, name: str) -> None:
@@ -223,15 +223,15 @@ class BotGUI:
         form = ActionForm(
             title=f"§l§6{name}",
             content=(
-                f"§7有效假人上限：§f{max_text}\n"
-                f"§7创建冷却：§f{limits.cooldown_seconds}s\n"
-                f"§7绕过全服上限：§f{'是' if limits.bypass_global_limit else '否'}"
+                f"有效假人上限：§f{max_text}\n"
+                f"创建冷却：§f{limits.cooldown_seconds}s\n"
+                f"绕过全服上限：§f{'是' if limits.bypass_global_limit else '否'}"
             ),
         )
         form.add_button("§e编辑限制", on_click=lambda p: self.open_limit_edit(p, key, name))
-        form.add_button("§a解除全部限制\n§7不限数量、无冷却、绕过全服上限", on_click=lambda p: self._set_unlimited(p, key, name))
-        form.add_button("§7恢复全局默认", on_click=lambda p: self._reset_limits(p, key, name))
-        form.add_button("§7返回", on_click=lambda p: self.open_limit_players(p))
+        form.add_button("§a解除全部限制\n不限数量、无冷却、绕过全服上限", on_click=lambda p: self._set_unlimited(p, key, name))
+        form.add_button("恢复全局默认", on_click=lambda p: self._reset_limits(p, key, name))
+        form.add_button("返回", on_click=lambda p: self.open_limit_players(p))
         player.send_form(form)
 
     def open_limit_edit(self, player: Any, key: str, name: str) -> None:
