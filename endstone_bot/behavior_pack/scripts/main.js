@@ -11,7 +11,7 @@
  */
 
 import * as GameTest from "@minecraft/server-gametest";
-import { system, world } from "@minecraft/server";
+import { ItemStack, system, world } from "@minecraft/server";
 
 const PROTOCOL = 2;
 const MAX_MESSAGE_CHARS = 1400;
@@ -20,6 +20,7 @@ let activeTest = null;
 
 const simulatedPlayers = new Map();
 const pendingSpawns = [];
+const tridentBusy = new Set();
 
 function sourceKind(event) {
     try {
@@ -114,12 +115,24 @@ function validCommand(event, data) {
     return Number(data.p) === PROTOCOL;
 }
 
+function poseRotation(req) {
+    const pitchRaw = Number(req.pitch ?? 0);
+    const yawRaw = Number(req.yaw ?? 0);
+    const pitch = Number.isFinite(pitchRaw) ? Math.max(-90, Math.min(90, pitchRaw)) : 0;
+    const yaw = Number.isFinite(yawRaw) ? yawRaw : 0;
+    return { x: pitch, y: yaw };
+}
+
 function teleportSim(sim, req) {
     const dimension = getDimension(req.d);
+    const rotation = poseRotation(req);
     sim.teleport(
         { x: Number(req.x), y: Number(req.y), z: Number(req.z) },
-        { dimension },
+        { dimension, rotation },
     );
+    try {
+        sim.setRotation(rotation);
+    } catch (_) {}
 }
 
 function spawnWithGlobalApi(req) {
@@ -235,6 +248,61 @@ function doTeleport(req) {
     }
 }
 
+function finishTrident(name, sim) {
+    system.runTimeout(() => {
+        try {
+            sim.stopUsingItem();
+            reply("bot:trident_thrown", { n: name, ok: true });
+        } catch (e) {
+            reply("bot:error", { n: name, e: `trident release failed: ${String(e)}` });
+        } finally {
+            tridentBusy.delete(name);
+        }
+    }, 12);
+}
+
+function doThrowTrident(req) {
+    const name = String(req.n || "");
+    const sim = simulatedPlayers.get(name);
+    if (!sim) {
+        reply("bot:error", { n: name, e: "SimulatedPlayer not found" });
+        return;
+    }
+    if (tridentBusy.has(name)) {
+        reply("bot:error", { n: name, e: "trident action already in progress" });
+        return;
+    }
+
+    tridentBusy.add(name);
+    try {
+        teleportSim(sim, req);
+        const trident = new ItemStack("minecraft:trident", 1);
+        if (!sim.setItem(trident, 0, true)) {
+            tridentBusy.delete(name);
+            reply("bot:error", { n: name, e: "failed to equip trident" });
+            return;
+        }
+    } catch (e) {
+        tridentBusy.delete(name);
+        reply("bot:error", { n: name, e: `trident setup failed: ${String(e)}` });
+        return;
+    }
+
+    system.runTimeout(() => {
+        try {
+            if (!sim.useItemInSlot(0)) {
+                tridentBusy.delete(name);
+                reply("bot:error", { n: name, e: "failed to start using trident" });
+                return;
+            }
+            finishTrident(name, sim);
+        } catch (e) {
+            tridentBusy.delete(name);
+            reply("bot:error", { n: name, e: `trident use failed: ${String(e)}` });
+        }
+    }, 1);
+}
+
 function clearAll() {
     const entries = Array.from(simulatedPlayers.entries());
     for (const [name, sim] of entries) {
@@ -242,6 +310,7 @@ function clearAll() {
             sim.disconnect();
         } catch (_) {}
         simulatedPlayers.delete(name);
+        tridentBusy.delete(name);
     }
     pendingSpawns.length = 0;
     reply("bot:cleared", { count: entries.length });
@@ -341,6 +410,9 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
         case "bot:teleport":
             doTeleport(data);
             break;
+        case "bot:trident":
+            doThrowTrident(data);
+            break;
         case "bot:list":
             sendList();
             break;
@@ -361,6 +433,7 @@ try {
         const name = String(event.playerName || "");
         if (simulatedPlayers.has(name)) {
             simulatedPlayers.delete(name);
+            tridentBusy.delete(name);
             reply("bot:lost", { n: name });
         }
     });
