@@ -1,241 +1,126 @@
-# Endstone Bot
+# endstone-bot (server fork)
 
-Minecraft 基岩版（BDS）假人管理插件，基于 [Endstone](https://github.com/EndstoneMC/endstone) 插件框架。
+面向 Endstone/BDS 生存服务器的轻量 **SimulatedPlayer 假人管理插件**。本 fork 基于 BCZZB/endstone-bot，保留 GameTest SimulatedPlayer 桥接，删除与挂机假人无关的 AI、NPC/entity、皮肤和 practice 遗留路径，并补上生产服务器需要的资源限制、管理员例外、GUI 与控制台管理。
 
-假人管理逻辑严格参照开源项目 [mcbes-manage-script](https://github.com/YueHua46/mcbes-manage-script) 实现，并提供原版所没有的 **Server UI GUI**、**行为包自动部署** 与 **NBT 实验功能自动开启** 能力。
+> 许可证仍为 PolyForm Noncommercial License 1.0.0。本 fork 面向非商业/公益服务器使用；上游 Required Notice 与许可证文件必须保留。
 
----
+## 设计目标
 
-## 功能特性
+- 只使用真正的 `SimulatedPlayer`，不再提供 NPC + tickingarea 伪假人。
+- 普通玩家默认受严格资源限制，避免无限创建造成 DoS。
+- 管理员可以给指定玩家单独提高上限，或一键解除全部限制，适合生电玩家/技术玩家。
+- `/bot` 直接打开玩家 GUI，适合 ClockMenu 只执行一个命令接入。
+- 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
+- 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
+- Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
+- 不自动修改 `level.dat`。找不到精确世界目录时 fail closed，不猜测其他世界。
 
-- **两种假人类型**（同 mcbes-manage-script）
-  - `entity` — NPC 实体 + `tickingarea` 常加载区块，区块保持 ticking，原版刷怪系统自然工作（**不含任何自制刷怪代码**）
-  - `simulated` — 通过内置行为包调用 `@minecraft/server-gametest` 的 `SimulatedPlayer`（原版同款模拟玩家），行为包未就绪时**新建**假人自动降级为 `entity`（已有 simulated 假人保持类型，行为包恢复连接后自动重建）
-- **GUI 界面** — `/bot gui` 打开表单菜单：创建 / 列表 / 皮肤 / 行为 / 半径 / 移动 / 删除全部可视化操作；右键假人直接打开管理菜单
-- **自动部署** — whl 放入 `plugins/` 后首次启动自动完成：
-  - 释放内置行为包到 `worlds/<world>/behavior_packs/`
-  - 注册到 `world_behavior_packs.json`（异常时不覆盖已有内容）
-  - 直接编辑 `level.dat` 开启 Beta APIs 实验功能（保留世界数据，自动备份）
-- **同款管理逻辑** — 所有者追踪、自愈恢复、位置守护、伤害拦截、击退清除、右键交互、16 款皮肤变体、行为系统（待机 / 原地驻守 / 跟随）
-- **安全加固** — scriptevent 鉴权令牌、UUID 所有权判定、名称字符集白名单、NBT 读取深度/长度限制、原子写入
+## 默认限制
 
-## 环境要求
-
-| 依赖 | 版本 |
-|------|------|
-| Bedrock Dedicated Server | 1.21+ |
-| Endstone | 0.11+ |
-| Python | 3.10+ |
-
-## 安装
-
-### 方式一：从 GitHub Releases 下载（推荐）
-
-访问 [Releases 页面](https://github.com/BCZZB/endstone-bot/releases) 下载最新版 wheel：
-
-```bash
-# 以 v3.1.0 为例
-wget https://github.com/BCZZB/endstone-bot/releases/download/v3.1.0/endstone_bot-3.1.0-py3-none-any.whl
-pip install endstone_bot-3.1.0-py3-none-any.whl
+```json
+{
+  "limits": {
+    "max_total": 6,
+    "max_per_player": 1,
+    "spawn_cooldown_seconds": 10
+  },
+  "position_guard": {
+    "enabled": true,
+    "interval_ticks": 10,
+    "distance": 1.0
+  }
+}
 ```
 
-或将 whl 文件直接放入 BDS 的 `plugins/` 目录。
+配置文件位于插件数据目录的 `config.json`。管理员 GUI 和 `/bot config ...` 修改后立即生效。
 
-### 方式二：从源码构建
+玩家例外保存在 `player_limits.json`：
 
-```bash
-git clone https://github.com/BCZZB/endstone-bot.git
-cd endstone-bot
-pip install build
-python -m build
-pip install dist/*.whl
-```
+- `max_bots = -1`：不限假人数量。
+- `cooldown_seconds = 0`：取消创建冷却。
+- `bypass_global_limit = true`：该玩家可以绕过全服总上限。
 
-### 首次启动
+管理员 GUI 中的“解除全部限制”会一次设置这三项。
 
-启动服务器后插件会自动：
+## GUI / ClockMenu
 
-1. 释放行为包并注册到世界
-2. 在 `level.dat` 中开启 Beta APIs 实验功能（自动备份原文件）
-3. **重启服务器**使实验功能与行为包生效
+玩家执行 `/bot` 即可打开主 GUI。ClockMenu 推荐直接把菜单按钮绑定到 `/bot`。
 
-日志出现 `§a行为包已连接` 即表示 simulated 类型就绪。
+管理员也可以在 GUI 中进入“管理员面板”，或执行 `/bot admin`。
 
-## 快速上手
+## 命令
+
+普通玩家：
 
 ```text
-/bot gui                       # 打开 GUI 主菜单（玩家）
-/bot spawn Steve entity        # 在脚下生成 NPC 型假人
-/bot spawn Alex simulated      # 生成模拟玩家型假人（行为包）
-/bot list                      # 查看所有假人
-/bot skin Steve 3              # 切换皮肤变体（0-15）
-/bot behavior Steve follow     # 设置跟随行为
-/bot radius Steve 4            # 常加载区域半径（0-4 区块）
-/bot movehere Steve            # 传送到自己身边
-/bot remove Steve              # 删除假人
-/bot clearall                  # 删除全部假人
+/bot
+/bot gui
+/bot status
+/bot list
+/bot spawn <name>
+/bot remove <name>
+/bot tp <name>
 ```
 
-> **提示**：`/bot ping` 不是命令，行为包连接状态由插件自动检测（日志出现 `§a行为包已连接` 即代表就绪）。
-
-| 命令 | 说明 |
-|------|------|
-| `/bot` | 玩家执行直接打开 GUI；控制台显示用法 |
-| `/bot spawn <name> [type] [skin]` | 生成假人，type 为 `entity` / `simulated`，skin 为 0-15 |
-| `/bot remove <name>` | 删除指定假人 |
-| `/bot list` `/bots` | 列出所有假人及状态 |
-| `/bot info <name>` | 查看假人详细信息 |
-| `/bot skin <name> <0-15>` / `/bot skins` | 切换 / 查看皮肤变体 |
-| `/bot behavior <name> <idle\|station\|follow> [target]` | 设置行为 |
-| `/bot radius <name> <0-4>` | 调整常加载区域半径（0 = 取消常加载） |
-| `/bot movehere <name>` | 将假人移动到执行者位置 |
-| `/bot clearall` | 删除全部假人（带确认） |
-| `/bot credits` | 查看参考项目致谢 |
-
-默认权限为 OP，可在权限配置中调整 `endstone_bot.command`。
-
-## 行为系统
-
-> v3.1.0 起，**两种假人类型均支持行为系统**：
-> - `entity` 类型通过 NPC 实体传送实现
-> - `simulated` 类型通过行为包坐标上报 + `bot:teleport` 桥接指令实现（无需修改行为包）
-
-| 行为 | 说明 |
-|------|------|
-| `idle` | 待机，位置守护生效（被推离后自动回到原位） |
-| `station` | 原地驻守，即便被推走也会立刻回到站桩点 |
-| `follow <target>` | 距离大于阈值传送至目标身后，否则保持跟随偏移 |
-
-行为每 10 tick 检查一次；`follow` 模式下若目标不在线或跨维度，假人保持原地不动，目标回来/同维度后自动恢复跟随。
-
-## @ai AI 对话
-
-假人支持 AI 对话功能，玩家在聊天框 `@假人名字` 即可唤醒 AI 与假人对话。
-
-### 使用方式
-
-```
-@Steve 你好
-@Steve 去砍树
-```
-
-唤醒词是假人的名字（叫什么就 @ 什么）。玩家需要对假人 AI 有权限才能使用（见下方授权）。v3.2.1 起，模型会返回受约束的结构化动作并真正控制假人，而不只是文字回复。
-
-支持的 AI 动作：`idle`、`station`、`follow`、`movehere`、`stop`、`say`。未知动作和服务器命令会被丢弃。每个假人同一时间只处理一个请求，每位玩家有 4 秒冷却，并保留最近 12 条短期对话记忆。
-
-### 管理员设置
-
-**1. 配置 AI 模型**（OP 专用）
+管理员/控制台：
 
 ```text
-/bot ai-config set https://api.openai.com/v1 sk-your-api-key gpt-4o-mini
+/bot createat <name> <owner> <x> <y> <z> <overworld|nether|the_end>
+/bot moveat <name> <x> <y> <z> <overworld|nether|the_end>
+/bot remove <name>
+/bot removeall
+
+/bot limit <player> show
+/bot limit <player> unlimited
+/bot limit <player> default
+/bot limit <player> max <count>
+/bot limit <player> cooldown <seconds>
+/bot limit <player> bypassglobal <true|false>
+
+/bot config show
+/bot config reload
+/bot config maxtotal <count>
+/bot config maxperplayer <count>
+/bot config cooldown <seconds>
 ```
 
-**2. 开启假人 AI**
+给生电玩家解除全部限制：
 
 ```text
-/bot ai Steve on
+/bot limit Alice unlimited
 ```
 
-**3. 授权玩家使用**
+恢复默认：
 
 ```text
-/bot ai Steve add 玩家名字     # 添加授权
-/bot ai Steve remove 玩家名字  # 移除授权
-/bot ai Steve list             # 查看 AI 配置和授权列表
+/bot limit Alice default
 ```
 
-> 假人 owner（创建者）和 OP 默认可用，无需额外授权。
+离线玩家也可以先按名字配置。玩家下一次上线后，插件会把名称例外迁移到 UUID，并把该玩家旧的 name-only 假人所有权绑定到 UUID。
 
-### 命令汇总
+## Behavior Pack / Beta APIs
 
-| 命令 | 说明 |
-|------|------|
-| `/bot ai-config get` | 查看当前 AI 配置 |
-| `/bot ai-config set <url> <key> <model>` | 设置 AI API |
-| `/bot ai-config test` | 后台异步测试 AI 连接 |
-| `/bot ai-config models` | 获取 API 提供的模型列表 |
-| `/bot ai-config clear` | 清除 AI API 配置 |
-| `/bot ai <名字> on` | 开启假人 AI |
-| `/bot ai <名字> off` | 关闭假人 AI |
-| `/bot ai <名字> add <玩家>` | 添加授权玩家 |
-| `/bot ai <名字> remove <玩家>` | 移除授权玩家 |
-| `/bot ai <名字> list` | 查看 AI 配置 |
+插件只根据 `server.level.name` 精确寻找当前世界，自动安装/升级内置 Behavior Pack，并更新 `world_behavior_packs.json`。它**不会自动修改 `level.dat`**。
 
-### AI 模型支持
+SimulatedPlayer 依赖 Beta APIs。如果行为包桥接未建立，日志会提示检查完整重启和 Beta APIs。首次安装或 Behavior Pack 版本升级后需要完整重启 BDS。
 
-支持**任何 OpenAI 兼容格式的 API**，包括：
+## Bridge protocol 2
 
-- OpenAI 官方（GPT-4o / GPT-4o-mini 等）
-- DeepSeek
-- 火山引擎（豆包 / 扣子等）
-- 本地 Ollama
-- 其他兼容 OpenAI 格式的模型服务
+- `bot:hello` 建立随机 token；后续消息必须使用同一 token。
+- 只接受 `sourceType=Server` 的控制消息。
+- `/reload` 时使用经过认证的 `bot:shutdown` 清理远端 SimulatedPlayer 并释放旧 token。
+- heartbeat 超时后插件真正进入断开状态。
+- 坐标和列表按消息长度分批，避免撞 `/scriptevent` 2048 字符上限。
+- 优先使用模块级 `spawnSimulatedPlayer(DimensionLocation, ...)`；若当前 BDS 没有该接口，则回退到长生命周期 GameTest，并生成后传送到目标绝对世界坐标和维度。
 
-只需在 `/bot ai-config set` 中填入对应的 `baseUrl`、`apiKey`、`model` 即可。
+## 数据
 
-## 架构说明
+- `bots.json`：持久化假人定义和挂机锚点。
+- `config.json`：全局资源限制。
+- `player_limits.json`：玩家级例外。
 
-```text
-endstone_bot/
-├── __init__.py              # 入口、致谢信息
-├── bot_plugin.py            # 主插件：命令、事件、自愈、守护、行为、行为包桥接
-├── models.py                # FakePlayer / BotBehavior 数据模型与校验
-├── gui.py                   # Server UI 表单（ActionForm / ModalForm）
-├── nbt.py                   # Bedrock 小端 NBT 读写（带 DoS 防护）
-├── level_dat.py             # level.dat 实验功能编辑器
-└── behavior_pack/           # 内置桥接行为包（随 whl 分发）
-    ├── manifest.json        # 依赖 @minecraft/server-gametest (beta)
-    ├── scripts/main.js      # SimulatedPlayer 生成 / 移除 / 传送 / 坐标上报
-    └── structures/endstone_bot/empty.mcstructure
-```
+写入均采用临时文件 + replace。
 
-### Endstone ↔ 行为包桥接
+## 上游与许可证
 
-Endstone 无法直接调用 `@minecraft/server-gametest`（独立脚本运行时），插件通过 `scriptevent` 命令桥接：
-
-```text
-Endstone (Python)                    行为包 (JavaScript)
-     │                                     │
-     │── scriptevent bot:ping  {t:token} ──▶│
-     │◀──── scriptevent bot:pong {names} ───│
-     │── scriptevent bot:spawn {n,x,y,z} ──▶│ spawnSimulatedPlayer()
-     │◀──── scriptevent bot:spawned {ok} ───│
-     │◀──── scriptevent bot:positions {p} ──│ 每 100 tick 坐标上报
-     │── scriptevent bot:remove {n} ──────▶│ disconnect()
-```
-
-双向消息均携带随机鉴权令牌（每次启动重新生成），防止玩家伪造 scriptevent 干扰状态机。
-
-### 刷怪说明
-
-本插件**不包含任何自制刷怪逻辑**。`entity` 型假人通过 `tickingarea` 命令保持所在区块 ticking，Minecraft 原版刷怪系统在这些区块中按原版规则自然工作——与原版 `tickingarea` 行为完全一致，遵守 mob cap 与亮度判定。
-
-## 数据与持久化
-
-- 假人数据存储于 `plugins/endstone_bot/bots.json`（原子写入，脏标记批量落盘）
-- `level.dat` 修改前自动备份为 `level.dat.bak`（仅 `experiments` 字段，世界种子/出生点等不受影响）
-- 服务器重启后自动恢复全部假人（含 simulated 类型，依据行为包上报的持久化坐标）
-
-## 文档
-
-- [用户指南（HTML）](docs/guide/endstone-bot-guide.html) — GUI 与命令完整说明
-- [更新日志](CHANGELOG.md)
-- [贡献指南](CONTRIBUTING.md)
-
-## 致谢
-
-本项目假人管理逻辑严格参照以下开源项目实现：
-
-- **[mcbes-manage-script](https://github.com/YueHua46/mcbes-manage-script)** by YueHua46 — 两种假人类型、所有者追踪、自愈恢复、位置守护、伤害拦截、右键交互、皮肤变体、行为系统（PolyForm Noncommercial License 1.0.0）
-- **[Endstone](https://github.com/EndstoneMC/endstone)** — 插件框架
-
-游戏内执行 `/bot credits` 可查看致谢信息。
-
-## 许可证
-
-[PolyForm Noncommercial License 1.0.0](LICENSE)
-
-因参考项目 mcbes-manage-script 采用该许可，本衍生项目依法采用相同许可：允许任何**非商业目的**的使用、修改与分发。
-
-文档字体（JetBrains Mono / Work Sans / Pixelify Sans）遵循各自的 [SIL OFL 1.1](docs/guide/_shared/fonts/) 许可。
+本 fork 基于 BCZZB/endstone-bot 与 mcbes-manage-script by YueHua46。见仓库 `LICENSE` 和 Required Notice。
