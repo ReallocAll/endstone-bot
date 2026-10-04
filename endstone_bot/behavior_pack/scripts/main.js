@@ -195,9 +195,7 @@ function teleportSim(sim, req) {
 
 function spawnWithTestApi(req) {
     if (!activeTest) return null;
-    const sim = activeTest.spawnSimulatedPlayer({ x: 0, y: 2, z: 0 }, String(req.n));
-    if (sim) teleportSim(sim, req);
-    return sim;
+    return activeTest.spawnSimulatedPlayer({ x: 0, y: 2, z: 0 }, String(req.n));
 }
 
 function isDeadSim(name, sim) {
@@ -254,17 +252,28 @@ function doSpawn(req) {
     const pose = rememberPose(req);
     const existing = simulatedPlayers.get(name);
     if (existing) {
+        let existingValid = false;
         try {
-            if (existing.isValid) {
-                if (isDeadSim(name, existing)) {
-                    respawnTracked(name, existing, pose);
-                    return;
-                }
-                teleportSim(existing, pose);
-                reply("bot:spawned", { n: name, ok: true, existed: true });
+            existingValid = Boolean(existing.isValid);
+        } catch (_) {}
+
+        if (existingValid) {
+            if (isDeadSim(name, existing)) {
+                respawnTracked(name, existing, pose);
                 return;
             }
-        } catch (_) {}
+            try {
+                teleportSim(existing, pose);
+                reply("bot:spawned", { n: name, ok: true, existed: true });
+            } catch (e) {
+                // Keep a still-valid existing player tracked. Untracking here would
+                // create an orphan that later list/reconcile cannot safely own.
+                reply("bot:error", { n: name, e: `existing SimulatedPlayer teleport failed: ${String(e)}` });
+            }
+            return;
+        }
+
+        try { existing.disconnect(); } catch (_) {}
         simulatedPlayers.delete(name);
         deadPlayers.delete(name);
         tridentBusy.delete(name);
@@ -289,9 +298,22 @@ function doSpawn(req) {
         return;
     }
 
+    try {
+        // Initial placement is deliberately performed exactly once here. If it
+        // fails after spawn, disconnect the untracked object before reporting the
+        // error so a failed request cannot leak an orphan SimulatedPlayer.
+        teleportSim(sim, pose);
+    } catch (e) {
+        try { sim.disconnect(); } catch (_) {}
+        deadPlayers.delete(name);
+        tridentBusy.delete(name);
+        desiredPoses.delete(name);
+        reply("bot:error", { n: name, e: `initial SimulatedPlayer teleport failed: ${String(e)}` });
+        return;
+    }
+
     simulatedPlayers.set(name, sim);
     deadPlayers.delete(name);
-    teleportSim(sim, pose);
     reply("bot:spawned", { n: name, ok: true });
 }
 
