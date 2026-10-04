@@ -9,9 +9,14 @@ from endstone.command import Command, CommandSender
 from endstone.event import PlayerJoinEvent, ScriptMessageEvent, event_handler
 from endstone.plugin import Plugin
 
+from endstone_bot.beta_bootstrap import (
+    cancel_exit_patch,
+    consume_status,
+    schedule_exit_patch,
+)
 from endstone_bot.bridge import BRIDGE_PROTOCOL, BridgeManager
 from endstone_bot.gui import BotGUI
-from endstone_bot.level_dat import enable_beta_apis_safely, resolve_level_dat_for_startup
+from endstone_bot.level_dat import is_beta_apis_enabled
 from endstone_bot.manager import FakeBotManager
 from endstone_bot.settings import SettingsManager
 
@@ -55,38 +60,22 @@ class BotPlugin(Plugin):
     BEHAVIOR_PACK_VERSION = [4, 1, 4]
 
     def on_load(self) -> None:
-        """Patch Beta APIs before BDS reads the world, never after world load."""
         self.data_folder.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsManager(self.data_folder, self.logger)
-        self._startup_world_resolution = None
-        self._beta_patch_result = None
 
-        if not self.settings.beta_auto_enable:
-            return
-
-        resolution = resolve_level_dat_for_startup(Path.cwd())
-        self._startup_world_resolution = resolution
-        if resolution.level_dat is None or resolution.world_dir is None:
-            self.logger.warning(
-                f"Beta APIs 自动启用已跳过：{resolution.error}"
-            )
-            return
-
-        result = enable_beta_apis_safely(
-            resolution.level_dat,
-            backup_root=self.data_folder / "level_dat_backups",
-            world_name=resolution.level_name,
-            backup_keep=self.settings.beta_backup_keep,
-        )
-        self._beta_patch_result = result
-
-        if result.changed:
-            self.logger.info(
-                f"已在世界加载前安全启用 Beta APIs：{resolution.level_name}；"
-                f"原始 level.dat 备份于 {result.backup_path}"
-            )
-        elif not result.ok:
-            self.logger.warning(f"Beta APIs 自动启用未执行：{result.message}")
+        status = consume_status(self.data_folder / "beta_patch_status.json")
+        if isinstance(status, dict):
+            changed = bool(status.get("changed", False))
+            patch_status = str(status.get("status", ""))
+            message = str(status.get("message", ""))
+            backup = str(status.get("backup_path", ""))
+            if changed and patch_status == "patched":
+                suffix = f"；备份：{backup}" if backup else ""
+                self.logger.info(f"上次正常停服后已安全启用 Beta APIs{suffix}")
+            elif patch_status not in ("", "already-enabled"):
+                self.logger.warning(
+                    f"上次正常停服后的 Beta APIs 自动修改未完成：{message or patch_status}"
+                )
 
     def on_enable(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -102,6 +91,7 @@ class BotPlugin(Plugin):
         self._bridge_warning_sent = False
 
         pack_state = self._setup_behavior_pack()
+        self._configure_beta_exit_patch()
         self.manager.restore()
 
         scheduler = self.server.scheduler
@@ -116,6 +106,34 @@ class BotPlugin(Plugin):
         )
         if pack_state in {"installed", "updated"}:
             self.logger.warning("行为包已写入当前世界；首次安装或更新后需要重启服务器。")
+
+    def _configure_beta_exit_patch(self) -> None:
+        cancel_exit_patch()
+        if not self.settings.beta_auto_enable:
+            return
+
+        world_dir = self._find_world_dir()
+        if world_dir is None:
+            self.logger.warning(
+                "Beta APIs 自动启用已跳过：无法精确定位当前世界；不会扫描或猜测 worlds 目录。"
+            )
+            return
+
+        level_dat = world_dir / "level.dat"
+        if is_beta_apis_enabled(level_dat):
+            return
+
+        schedule_exit_patch(
+            level_dat,
+            backup_root=self.data_folder / "level_dat_backups",
+            world_name=world_dir.name,
+            backup_keep=self.settings.beta_backup_keep,
+            status_path=self.data_folder / "beta_patch_status.json",
+        )
+        self.logger.warning(
+            "当前世界尚未启用 Beta APIs；将在本次服务器正常退出、最终世界保存完成后安全修改 "
+            "level.dat。请完整停止并再次启动服务器。"
+        )
 
     def on_disable(self) -> None:
         if hasattr(self, "manager"):
@@ -478,6 +496,7 @@ class BotPlugin(Plugin):
             return True
         if mode == "reload":
             self.settings.reload()
+            self._configure_beta_exit_patch()
             sender.send_message("§a假人配置已重新加载。")
             return True
         if mode == "betaauto":
@@ -485,9 +504,10 @@ class BotPlugin(Plugin):
                 return True
             enabled = str(args[2]).lower() in ("true", "1", "on", "yes")
             self.settings.set_beta_auto_enable(enabled)
+            self._configure_beta_exit_patch()
             sender.send_message(
                 f"§aBeta APIs 自动启用已{'开启' if enabled else '关闭'}；"
-                "将在下一次完整启动的世界加载前生效。"
+                "开启时会在服务器正常退出、最终世界保存完成后修改，下一次完整启动生效。"
             )
             return True
         if mode in ("maxtotal", "maxperplayer", "cooldown"):
