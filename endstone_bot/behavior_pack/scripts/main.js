@@ -151,30 +151,58 @@ function orientSim(sim, req) {
 
     if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
         const invLength = 1 / Math.sqrt(lengthSq);
+        const nx = dx * invLength;
+        const ny = dy * invLength;
+        const nz = dz * invLength;
+
+        // Minecraft rotation convention:
+        //   yaw 0 = +Z, +90 = -X
+        //   positive pitch looks downward.
+        const rotation = {
+            x: -Math.asin(Math.max(-1, Math.min(1, ny))) * 180 / Math.PI,
+            y: Math.atan2(-nx, nz) * 180 / Math.PI,
+        };
+
+        let head = null;
+        let target = null;
         try {
-            const head = sim.getHeadLocation();
-            const target = {
-                x: head.x + dx * invLength * 32,
-                y: head.y + dy * invLength * 32,
-                z: head.z + dz * invLength * 32,
+            head = sim.getHeadLocation();
+            target = {
+                x: head.x + nx * 32,
+                y: head.y + ny * 32,
+                z: head.z + nz * 32,
             };
-
-            // Important: use the SimulatedPlayer-specific controller API first.
-            // Entity.lookAt() updates visible entity rotation, but item-use actions
-            // can continue to use the GameTest simulated-player control rotation.
-            if (typeof sim.lookAtLocation === "function") {
-                sim.lookAtLocation(target, GameTest.LookDuration?.Instant ?? "Instant");
-                return;
-            }
-
-            sim.lookAt(target);
-            return;
         } catch (_) {}
+
+        // Synchronize all three rotations used by different parts of the
+        // SimulatedPlayer implementation.  In BDS 26.51 the visible entity
+        // rotation can be correct while item-use still reads controller/body yaw.
+        try {
+            sim.setRotation(rotation);
+        } catch (_) {}
+        try {
+            if (typeof sim.setBodyRotation === "function") {
+                sim.setBodyRotation(rotation.y);
+            }
+        } catch (_) {}
+        try {
+            if (target && typeof sim.lookAtLocation === "function") {
+                sim.lookAtLocation(target, GameTest.LookDuration?.Instant ?? "Instant");
+            } else if (target) {
+                sim.lookAt(target);
+            }
+        } catch (_) {}
+        return;
     }
 
     const rotation = poseRotation(req);
     try {
         sim.setRotation(rotation);
+    } catch (_) {}
+    try {
+        if (typeof sim.setBodyRotation === "function") {
+            sim.setBodyRotation(rotation.y);
+        }
     } catch (_) {}
 }
 
@@ -460,19 +488,30 @@ function doThrowTrident(req) {
 
     system.runTimeout(() => {
         try {
-            // Re-apply the exact world-space look direction through the
-            // SimulatedPlayer controller immediately before using the item.
+            // Commit visual rotation + controller/body rotation first.
             orientSim(sim, pose);
-            if (!sim.useItemInSlot(slot)) {
-                tridentBusy.delete(name);
-                tridentResult(name, requester, false, "use_failed");
-                return;
-            }
-            finishTrident(name, requester, sim);
         } catch (e) {
             tridentBusy.delete(name);
-            tridentResult(name, requester, false, `use_failed:${String(e)}`);
+            tridentResult(name, requester, false, `aim_failed:${String(e)}`);
+            return;
         }
+
+        // Do not start item use in the same tick as the controller rotation.
+        // BDS 26.51 otherwise may launch chargeable projectiles with the stale
+        // default controller direction even though the model already looks right.
+        system.runTimeout(() => {
+            try {
+                if (!sim.useItemInSlot(slot)) {
+                    tridentBusy.delete(name);
+                    tridentResult(name, requester, false, "use_failed");
+                    return;
+                }
+                finishTrident(name, requester, sim);
+            } catch (e) {
+                tridentBusy.delete(name);
+                tridentResult(name, requester, false, `use_failed:${String(e)}`);
+            }
+        }, 1);
     }, 2);
 }
 
