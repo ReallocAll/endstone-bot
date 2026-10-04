@@ -107,7 +107,7 @@ SimulatedPlayer 依赖 Beta APIs。如果行为包桥接未建立，日志会提
 ## Bridge protocol 2
 
 - `bot:hello` 建立随机 token；后续消息必须使用同一 token。
-- 只接受 `sourceType=Server` 的控制消息。
+- 优先接受 `sourceType=Server`；兼容 Endstone `ConsoleCommandSender` 产生的无实体/无方块/NPC 来源命令，同时拒绝玩家、实体、命令方块和 NPC 来源。
 - `/reload` 时使用经过认证的 `bot:shutdown` 清理远端 SimulatedPlayer 并释放旧 token。
 - heartbeat 超时后插件真正进入断开状态。
 - 坐标和列表按消息长度分批，避免撞 `/scriptevent` 2048 字符上限。
