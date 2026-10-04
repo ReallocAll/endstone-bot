@@ -195,7 +195,7 @@ class FakeBotManager:
             return
         now = time.monotonic()
         for fp in list(self.bots.values()):
-            if fp.sim_spawn_confirmed and fp.sim_last_seen_at > 0 and now - fp.sim_last_seen_at <= 15.0:
+            if fp.sim_last_seen_at > 0 and now - fp.sim_last_seen_at <= 15.0:
                 continue
             fp.sim_spawn_confirmed = False
             self.spawn(fp)
@@ -204,7 +204,10 @@ class FakeBotManager:
         known = {fp.name.lower(): fp for fp in self.bots.values()}
         remote = {name.lower(): name for name in names}
         for lower, fp in known.items():
-            fp.sim_spawn_confirmed = lower in remote
+            if lower in remote:
+                fp.sim_spawn_confirmed = True
+            elif not fp.is_recently_seen():
+                fp.sim_spawn_confirmed = False
         for lower, remote_name in remote.items():
             if lower not in known:
                 self._logger.warning(f"移除行为包中的未登记假人: {remote_name}")
@@ -356,7 +359,7 @@ class FakeBotManager:
     def status_text(self, fp: FakePlayer) -> str:
         if not self._bridge.active:
             return "桥接离线"
-        if fp.sim_spawn_confirmed and fp.is_recently_seen():
+        if fp.is_recently_seen():
             return "在线"
         if fp.sim_spawn_confirmed:
             return "等待位置上报"
