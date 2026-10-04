@@ -1,9 +1,11 @@
+import json
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "endstone_bot" / "behavior_pack" / "scripts" / "main.js"
+TRIDENT_ENTITY = ROOT / "endstone_bot" / "behavior_pack" / "entities" / "thrown_trident.json"
 
 
 class BehaviorPackTests(unittest.TestCase):
@@ -22,11 +24,23 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertNotIn("ItemStack,", self.source)
 
     def test_trident_uses_owned_projectile_component(self):
-        self.assertIn('spawnEntity("minecraft:thrown_trident"', self.source)
+        self.assertIn('spawnEntity("endstone_bot:thrown_trident"', self.source)
         self.assertIn('getComponent("minecraft:projectile")', self.source)
         self.assertIn("projectile.owner = sim", self.source)
         self.assertIn("projectile.shoot({", self.source)
         self.assertIn("const speed = 2.5", self.source)
+
+    def test_custom_trident_entity_matches_vanilla_damage_model(self):
+        entity = json.loads(TRIDENT_ENTITY.read_text(encoding="utf-8"))
+        desc = entity["minecraft:entity"]["description"]
+        projectile = entity["minecraft:entity"]["components"]["minecraft:projectile"]
+        self.assertEqual(desc["identifier"], "endstone_bot:thrown_trident")
+        self.assertEqual(desc["runtime_identifier"], "minecraft:thrown_trident")
+        self.assertTrue(desc["is_summonable"])
+        self.assertEqual(projectile["on_hit"]["impact_damage"]["damage"], 8)
+        self.assertTrue(projectile["on_hit"]["impact_damage"]["knockback"])
+        self.assertEqual(projectile["gravity"], 0.1)
+        self.assertEqual(projectile["power"], 4)
 
     def test_trident_path_no_longer_uses_simulated_player_item_use(self):
         self.assertNotIn("useItemInSlot(slot)", self.source)
