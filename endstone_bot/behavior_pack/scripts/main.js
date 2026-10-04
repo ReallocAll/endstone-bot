@@ -369,9 +369,14 @@ function verifyViewSync(name, sim, pose) {
                 expected.z * actual.z
             ) / (expectedLen * actualLen);
 
-            if (dot < 0.98) {
+            const expectedPitch = poseRotation(pose).x;
+            const actualRotation = sim.getRotation();
+            const pitchError = Math.abs(Number(actualRotation.x) - expectedPitch);
+
+            if (dot < 0.98 || pitchError > 2.0) {
                 console.warn(
                     `[EndstoneBot] view sync mismatch [${name}]: dot=${dot.toFixed(4)} ` +
+                    `pitch=${Number(actualRotation.x).toFixed(2)}/${expectedPitch.toFixed(2)} ` +
                     `expected=(${expected.x.toFixed(4)},${expected.y.toFixed(4)},${expected.z.toFixed(4)}) ` +
                     `actual=(${actual.x.toFixed(4)},${actual.y.toFixed(4)},${actual.z.toFixed(4)})`
                 );
