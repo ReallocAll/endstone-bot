@@ -22,6 +22,7 @@ class WheelTests(unittest.TestCase):
                 "endstone_bot/nbt.py",
                 "endstone_bot/behavior_pack/manifest.json",
                 "endstone_bot/behavior_pack/scripts/main.js",
+                "endstone_bot/behavior_pack/entities/thrown_trident.json",
             ):
                 self.assertIn(path, names)
             ep_name = next(x for x in names if x.endswith(".dist-info/entry_points.txt"))
