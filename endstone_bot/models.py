@@ -46,6 +46,8 @@ class FakePlayer:
     location_y: float
     location_z: float
     dimension: str
+    pitch: float
+    yaw: float
     created: str
 
     sim_spawn_confirmed: bool = False
@@ -63,6 +65,7 @@ class FakePlayer:
             "ownerUuid": self.owner_uuid,
             "location": [round(self.location_x, 2), round(self.location_y, 2), round(self.location_z, 2)],
             "dimension": self.dimension,
+            "rotation": [round(self.pitch, 2), round(self.yaw, 2)],
             "created": self.created,
             "type": "simulated",
         }
@@ -72,6 +75,9 @@ class FakePlayer:
         loc = data.get("location", [0.5, 80.0, 0.5])
         if not isinstance(loc, list) or len(loc) < 3:
             loc = [0.5, 80.0, 0.5]
+        rot = data.get("rotation", [0.0, 0.0])
+        if not isinstance(rot, list) or len(rot) < 2:
+            rot = [0.0, 0.0]
         return cls(
             id=str(data.get("id") or generate_id()),
             name=str(data.get("name", "")),
@@ -81,6 +87,8 @@ class FakePlayer:
             location_y=float(loc[1]),
             location_z=float(loc[2]),
             dimension=str(data.get("dimension", "overworld")).replace("minecraft:", ""),
+            pitch=float(rot[0]),
+            yaw=float(rot[1]),
             created=str(data.get("created", "")) or format_date_time_beijing(),
         )
 
