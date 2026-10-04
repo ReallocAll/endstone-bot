@@ -4,6 +4,7 @@ import json
 import secrets
 import time
 from typing import Any
+from urllib.parse import unquote
 
 from endstone.event import ScriptMessageEvent
 
@@ -82,18 +83,11 @@ class BridgeManager:
             return False
         return self._send_raw(event_id, data)
 
-    def handle_script_message(self, event: ScriptMessageEvent) -> dict[str, Any] | None:
-        msg_id = str(event.message_id or "")
-        if not msg_id.startswith("bot:"):
-            return None
-        try:
-            data = json.loads(event.message) if event.message else {}
-        except Exception:
-            return None
-        if not isinstance(data, dict):
+    def _accept_message(self, msg_id: str, data: Any) -> dict[str, Any] | None:
+        if not msg_id.startswith("bot:") or not isinstance(data, dict):
             return None
         if data.get("t") != self._token:
-            self._logger.debug(f"忽略未经认证的 scriptevent: {msg_id}")
+            self._logger.debug(f"忽略未经认证的 bridge message: {msg_id}")
             return None
 
         try:
@@ -116,12 +110,31 @@ class BridgeManager:
                 self._logger.info("行为包桥接已认证，SimulatedPlayer 功能可用。")
             return {"id": msg_id, "data": data}
 
-        if remote_protocol != BRIDGE_PROTOCOL:
-            return None
-        if not self._ready:
+        if remote_protocol != BRIDGE_PROTOCOL or not self._ready:
             return None
         self._last_seen_at = time.monotonic()
         return {"id": msg_id, "data": data}
+
+    def handle_script_message(self, event: ScriptMessageEvent) -> dict[str, Any] | None:
+        msg_id = str(event.message_id or "")
+        try:
+            data = json.loads(event.message) if event.message else {}
+        except Exception:
+            return None
+        return self._accept_message(msg_id, data)
+
+    def handle_command_callback(self, event_name: str, encoded_payload: str) -> dict[str, Any] | None:
+        event_name = str(event_name or "").strip()
+        if not event_name:
+            return None
+        msg_id = event_name if event_name.startswith("bot:") else f"bot:{event_name}"
+        try:
+            raw = unquote(str(encoded_payload or ""))
+            data = json.loads(raw)
+        except Exception:
+            self._logger.debug(f"忽略无法解析的 botbridge 回包: {event_name}")
+            return None
+        return self._accept_message(msg_id, data)
 
     def mark_stale_if_needed(self) -> bool:
         if self._ready and not self.active:
