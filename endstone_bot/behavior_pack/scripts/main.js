@@ -139,15 +139,25 @@ function spawnWithGlobalApi(req) {
     const fn = GameTest.spawnSimulatedPlayer;
     if (typeof fn !== "function") return null;
     const dimension = getDimension(req.d);
-    return fn(
-        {
-            dimension,
-            x: Number(req.x),
-            y: Number(req.y),
-            z: Number(req.z),
-        },
-        String(req.n),
-    );
+    const location = {
+        dimension,
+        x: Number(req.x),
+        y: Number(req.y),
+        z: Number(req.z),
+    };
+    const name = String(req.n);
+
+    // Current 2.x API requires gameMode. Accept the current enum value first,
+    // then the legacy lower-case value for older beta builds.
+    try {
+        return fn(location, name, "Survival");
+    } catch (currentError) {
+        try {
+            return fn(location, name, "survival");
+        } catch (_) {
+            throw currentError;
+        }
+    }
 }
 
 function spawnWithTestApi(req) {
