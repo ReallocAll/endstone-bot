@@ -32,7 +32,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Run unit tests
-        run: python -m unittest tests.test_settings tests.test_models tests.test_bridge tests.test_behavior_pack -v
+        run: python -m unittest tests.test_settings tests.test_models tests.test_bridge tests.test_behavior_pack tests.test_level_dat -v
 
       - name: Compile Python sources
         run: python -m compileall -q endstone_bot
