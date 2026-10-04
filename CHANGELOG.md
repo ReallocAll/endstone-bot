@@ -5,6 +5,15 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.3.9] - 2026-10-05
+
+### 修复
+
+- 修复 Endstone 0.11 事件监听注册失败：移除 `plugin.py` 的 postponed annotations，使 `PlayerJoinEvent` / `ScriptMessageEvent` 在 `inspect.signature()` 中保持真实 Event 类
+- 保留显式 `self.register_events(self)`，恢复玩家上线 owner UUID 迁移与 ScriptMessageEvent 监听
+- 增加回归测试，防止再次引入字符串化事件参数注解
+
+
 ## [4.3.8] - 2026-10-05
 
 ### 修复
