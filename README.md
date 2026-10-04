@@ -106,7 +106,7 @@ SimulatedPlayer 依赖 Beta APIs。如果行为包桥接未建立，日志会提
 
 ## Bridge protocol 2
 
-- `bot:hello` 建立随机 token；后续消息必须使用同一 token。
+- Python → Behavior Pack 使用 `/scriptevent`；Behavior Pack → Python 使用内部 `/botbridge` 命令回调，避免依赖 Script API 自发 `scriptevent` 是否再次进入 Endstone 的 `ScriptMessageEvent` hook。\n- `bot:hello` 建立随机 token；后续消息必须使用同一 token。
 - 优先接受 `sourceType=Server`；兼容 Endstone `ConsoleCommandSender` 产生的无实体/无方块/NPC 来源命令，同时拒绝玩家、实体、命令方块和 NPC 来源。
 - `/reload` 时使用经过认证的 `bot:shutdown` 清理远端 SimulatedPlayer 并释放旧 token。
 - heartbeat 超时后插件真正进入断开状态。
