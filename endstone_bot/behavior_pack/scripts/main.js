@@ -21,29 +21,30 @@ let activeTest = null;
 const simulatedPlayers = new Map();
 const pendingSpawns = [];
 
-function isTrustedServerSource(event) {
+function sourceKind(event) {
     try {
-        const sourceType = String(event.sourceType ?? "");
-        if (sourceType.toLowerCase().includes("server")) return true;
-
-        // Endstone dispatches /scriptevent through its ConsoleCommandSender. On some
-        // BDS builds that custom command origin is not surfaced as ScriptEventSource.Server,
-        // even though it has no entity/block/NPC initiator. Accept that headless origin,
-        // while still rejecting player/entity, command-block and NPC sourced events.
-        const hasActorSource =
-            event.sourceEntity !== undefined ||
-            event.sourceBlock !== undefined ||
-            event.initiator !== undefined;
-        if (!hasActorSource) {
-            console.warn(
-                `[EndstoneBot] accepting headless server-origin scriptevent (sourceType=${sourceType || "unknown"})`
-            );
-            return true;
-        }
-        return false;
+        return String(event.sourceType ?? "");
     } catch (_) {
+        return "";
+    }
+}
+
+function isTrustedServerSource(event) {
+    const kind = sourceKind(event);
+    const normalized = kind.toLowerCase();
+
+    // Reject sources that are explicitly known to be controllable from gameplay.
+    // Accept Server and unknown/headless command origins. The latter is needed for
+    // Endstone's ConsoleCommandSender on BDS builds that do not surface it as the
+    // ScriptEventSource.Server enum value.
+    if (
+        normalized === "block" ||
+        normalized === "entity" ||
+        normalized === "npcdialogue"
+    ) {
         return false;
     }
+    return true;
 }
 
 function parseMessage(event) {
@@ -281,9 +282,20 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
     if (!data) return;
 
     if (event.id === "bot:hello") {
-        if (!isTrustedServerSource(event)) return;
-        if (Number(data.p) !== PROTOCOL || typeof data.t !== "string" || data.t.length < 16) return;
+        const kind = sourceKind(event) || "unknown";
+        console.log(
+            `[EndstoneBot] hello received: sourceType=${kind}, messageLength=${String(event.message ?? "").length}`
+        );
+        if (!isTrustedServerSource(event)) {
+            console.warn(`[EndstoneBot] rejected hello from sourceType=${kind}`);
+            return;
+        }
+        if (Number(data.p) !== PROTOCOL || typeof data.t !== "string" || !/^[0-9a-f]{32}$/i.test(data.t)) {
+            console.warn("[EndstoneBot] rejected malformed hello payload");
+            return;
+        }
         if (bridgeToken && data.t !== bridgeToken) {
+            console.warn("[EndstoneBot] rejected hello with a different active token");
             return;
         }
         bridgeToken = data.t;
