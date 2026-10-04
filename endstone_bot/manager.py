@@ -302,16 +302,15 @@ class FakeBotManager:
             return False, "你没有权限管理该假人。"
         if not self._bridge.active:
             return False, "行为包桥接未就绪。"
-        if not self._capture_player_pose(sender, fp):
-            return False, "该操作需要玩家位置。"
-        self.save()
 
+        # Throwing must never move the bot onto the operator. The saved anchor
+        # and view direction are updated only by "move here".
         payload = self._pose_payload(fp)
         payload["r"] = str(getattr(sender, "name", "") or "")
         ok = self._bridge.send_bridge("trident", payload)
         if not ok:
             return False, "三叉戟投掷指令发送失败。"
-        return True, f"已请求 {fp.name} 按你当前的位置和视角投掷背包中的三叉戟。"
+        return True, f"已请求 {fp.name} 按已保存的位置和视角投掷背包中的三叉戟。"
 
     def teleport_to(self, fp: FakePlayer, x: float, y: float, z: float, dimension: str) -> tuple[bool, str]:
         if not self._bridge.active:
