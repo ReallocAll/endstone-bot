@@ -11,6 +11,7 @@ from endstone.plugin import Plugin
 
 from endstone_bot.bridge import BRIDGE_PROTOCOL, BridgeManager
 from endstone_bot.gui import BotGUI
+from endstone_bot.level_dat import enable_beta_apis_safely, resolve_level_dat_for_startup
 from endstone_bot.manager import FakeBotManager
 from endstone_bot.settings import SettingsManager
 
@@ -37,6 +38,7 @@ class BotPlugin(Plugin):
                 "/bot (limit)<action: BotLimitBoolAction> <player: str> (bypassglobal)<mode: BotLimitBoolMode> <enabled: bool>",
                 "/bot (config)<action: BotConfigAction> (show|reload)<mode: BotConfigSimpleMode>",
                 "/bot (config)<action: BotConfigNumberAction> (maxtotal|maxperplayer|cooldown)<key: BotConfigNumberKey> <value: int>",
+                "/bot (config)<action: BotConfigBoolAction> (betaauto)<key: BotConfigBoolKey> <enabled: bool>",
             ],
             "permissions": ["endstone_bot.command"],
         },
@@ -52,9 +54,44 @@ class BotPlugin(Plugin):
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
     BEHAVIOR_PACK_VERSION = [4, 1, 3]
 
-    def on_enable(self) -> None:
+    def on_load(self) -> None:
+        """Patch Beta APIs before BDS reads the world, never after world load."""
         self.data_folder.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsManager(self.data_folder, self.logger)
+        self._startup_world_resolution = None
+        self._beta_patch_result = None
+
+        if not self.settings.beta_auto_enable:
+            return
+
+        resolution = resolve_level_dat_for_startup(Path.cwd())
+        self._startup_world_resolution = resolution
+        if resolution.level_dat is None or resolution.world_dir is None:
+            self.logger.warning(
+                f"Beta APIs 自动启用已跳过：{resolution.error}"
+            )
+            return
+
+        result = enable_beta_apis_safely(
+            resolution.level_dat,
+            backup_root=self.data_folder / "level_dat_backups",
+            world_name=resolution.level_name,
+            backup_keep=self.settings.beta_backup_keep,
+        )
+        self._beta_patch_result = result
+
+        if result.changed:
+            self.logger.info(
+                f"已在世界加载前安全启用 Beta APIs：{resolution.level_name}；"
+                f"原始 level.dat 备份于 {result.backup_path}"
+            )
+        elif not result.ok:
+            self.logger.warning(f"Beta APIs 自动启用未执行：{result.message}")
+
+    def on_enable(self) -> None:
+        self.data_folder.mkdir(parents=True, exist_ok=True)
+        if not hasattr(self, "settings"):
+            self.settings = SettingsManager(self.data_folder, self.logger)
         self.bridge = BridgeManager(self.logger, self._dispatch)
         self.manager = FakeBotManager(
             self, self.data_folder, self.bridge, self.settings, self.logger
@@ -313,7 +350,8 @@ class BotPlugin(Plugin):
             f"假人：{len(self.manager.bots)} / {self.settings.max_total}\n"
             f"普通玩家默认：{self.settings.max_per_player} 个\n"
             f"创建冷却：{self.settings.spawn_cooldown_seconds}s\n"
-            f"位置守护：{'开启' if self.settings.guard_enabled else '关闭'}"
+            f"位置守护：{'开启' if self.settings.guard_enabled else '关闭'}\n"
+            f"Beta APIs 自动启用：{'开启' if self.settings.beta_auto_enable else '关闭'}"
         )
 
     def _send_list(self, sender: CommandSender) -> None:
@@ -441,6 +479,16 @@ class BotPlugin(Plugin):
         if mode == "reload":
             self.settings.reload()
             sender.send_message("§a假人配置已重新加载。")
+            return True
+        if mode == "betaauto":
+            if len(args) < 3:
+                return True
+            enabled = str(args[2]).lower() in ("true", "1", "on", "yes")
+            self.settings.set_beta_auto_enable(enabled)
+            sender.send_message(
+                f"§aBeta APIs 自动启用已{'开启' if enabled else '关闭'}；"
+                "将在下一次完整启动的世界加载前生效。"
+            )
             return True
         if mode in ("maxtotal", "maxperplayer", "cooldown"):
             if len(args) < 3:
