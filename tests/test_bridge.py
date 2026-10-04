@@ -3,6 +3,7 @@ import json
 import sys
 import types
 import unittest
+import time
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
@@ -84,6 +85,28 @@ class BridgeTests(unittest.TestCase):
 
         self.assertEqual(parsed["data"]["n"], "测试假人")
         self.assertEqual(parsed["data"]["e"], "错误：三叉戟")
+
+    def test_trident_action_dispatches_script_event(self):
+        commands = []
+        bridge = BridgeManager(Logger(), lambda command: commands.append(command) or True)
+        bridge._ready = True
+        bridge._last_seen_at = time.monotonic()
+
+        ok = bridge.send_bridge("trident", {
+            "n": "AimBot",
+            "x": 1,
+            "y": 64,
+            "z": 2,
+            "d": "overworld",
+            "pitch": -20,
+            "yaw": 90,
+        })
+
+        self.assertTrue(ok)
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(commands[0].startswith("scriptevent bot:trident "))
+        self.assertIn('"pitch":-20', commands[0])
+        self.assertIn('"yaw":90', commands[0])
 
 
 if __name__ == "__main__":
