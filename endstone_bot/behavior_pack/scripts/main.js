@@ -144,6 +144,20 @@ function poseRotation(req) {
     return { x: pitch, y: yaw };
 }
 
+function applySavedPitch(sim, req) {
+    const wanted = poseRotation(req);
+    try {
+        const current = sim.getRotation();
+        // Keep the yaw that the already-verified world-space lookAt() produced.
+        // Only x is replaced: Entity.setRotation documents x as head pitch and
+        // y as body yaw for player-like entities.
+        sim.setRotation({
+            x: wanted.x,
+            y: Number(current.y),
+        });
+    } catch (_) {}
+}
+
 function orientSim(sim, req) {
     const dx = Number(req.dx ?? 0);
     const dy = Number(req.dy ?? 0);
@@ -159,6 +173,7 @@ function orientSim(sim, req) {
                 y: head.y + dy * invLength * 32,
                 z: head.z + dz * invLength * 32,
             });
+            applySavedPitch(sim, req);
             return;
         } catch (_) {}
     }
@@ -176,6 +191,15 @@ function teleportSim(sim, req) {
         { dimension },
     );
     orientSim(sim, req);
+
+    // SimulatedPlayer may commit its controller/teleport state at the end of the
+    // current tick. Re-apply pitch once on the next tick while preserving the
+    // yaw that is already correct.
+    system.runTimeout(() => {
+        try {
+            if (sim.isValid) applySavedPitch(sim, req);
+        } catch (_) {}
+    }, 1);
 }
 
 
@@ -355,7 +379,7 @@ function verifyViewSync(name, sim, pose) {
         } catch (e) {
             console.warn(`[EndstoneBot] view sync verification failed [${name}]: ${e}`);
         }
-    }, 1);
+    }, 2);
 }
 function doTeleport(req) {
     const name = String(req.n || "");
