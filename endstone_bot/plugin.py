@@ -50,7 +50,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 0, 2]
+    BEHAVIOR_PACK_VERSION = [4, 0, 3]
 
     def on_enable(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
