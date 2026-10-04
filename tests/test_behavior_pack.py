@@ -44,12 +44,15 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn('world.structureManager.get(structureId)', self.source)
         self.assertIn('startSimulatedPlayerGameTest()', self.source)
 
-    def test_move_synchronizes_rotation_with_teleport(self):
-        self.assertIn("rotation: poseRotation(req)", self.source)
-        self.assertIn("Math.atan2(-nx, nz)", self.source)
-        self.assertIn("-Math.asin(", self.source)
-        self.assertIn("sim.lookAtLocation(target", self.source)
+    def test_move_restores_previously_verified_world_space_look(self):
+        self.assertIn("sim.lookAt({", self.source)
+        self.assertIn("head.x + dx * invLength * 32", self.source)
+        self.assertIn("head.y + dy * invLength * 32", self.source)
+        self.assertIn("head.z + dz * invLength * 32", self.source)
+        self.assertNotIn("rotation: poseRotation(req)", self.source)
+        self.assertNotIn("sim.lookAtLocation(target", self.source)
         self.assertNotIn("sim.setBodyRotation(", self.source)
+        self.assertIn("verifyViewSync(name, sim, pose)", self.source)
 
     def test_throw_does_not_change_position_or_view(self):
         start = self.source.index("function doThrowTrident(req)")
