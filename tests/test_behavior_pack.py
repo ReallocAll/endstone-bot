@@ -44,15 +44,21 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn('world.structureManager.get(structureId)', self.source)
         self.assertIn('startSimulatedPlayerGameTest()', self.source)
 
-    def test_move_restores_previously_verified_world_space_look(self):
+    def test_move_restores_verified_yaw_and_applies_pitch_only(self):
         self.assertIn("sim.lookAt({", self.source)
         self.assertIn("head.x + dx * invLength * 32", self.source)
         self.assertIn("head.y + dy * invLength * 32", self.source)
         self.assertIn("head.z + dz * invLength * 32", self.source)
+        self.assertIn("function applySavedPitch(sim, req)", self.source)
+        self.assertIn("const current = sim.getRotation()", self.source)
+        self.assertIn("x: wanted.x", self.source)
+        self.assertIn("y: Number(current.y)", self.source)
+        self.assertIn("if (sim.isValid) applySavedPitch(sim, req)", self.source)
         self.assertNotIn("rotation: poseRotation(req)", self.source)
         self.assertNotIn("sim.lookAtLocation(target", self.source)
         self.assertNotIn("sim.setBodyRotation(", self.source)
         self.assertIn("verifyViewSync(name, sim, pose)", self.source)
+        self.assertIn("pitchError > 2.0", self.source)
 
     def test_throw_does_not_change_position_or_view(self):
         start = self.source.index("function doThrowTrident(req)")
