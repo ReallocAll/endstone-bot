@@ -49,6 +49,9 @@ class FakePlayer:
     pitch: float
     yaw: float
     created: str
+    view_x: float = 0.0
+    view_y: float = 0.0
+    view_z: float = 0.0
 
     sim_spawn_confirmed: bool = False
     sim_has_position: bool = False
@@ -66,6 +69,7 @@ class FakePlayer:
             "location": [round(self.location_x, 2), round(self.location_y, 2), round(self.location_z, 2)],
             "dimension": self.dimension,
             "rotation": [round(self.pitch, 2), round(self.yaw, 2)],
+            "viewDirection": [round(self.view_x, 6), round(self.view_y, 6), round(self.view_z, 6)],
             "created": self.created,
             "type": "simulated",
         }
@@ -78,6 +82,9 @@ class FakePlayer:
         rot = data.get("rotation", [0.0, 0.0])
         if not isinstance(rot, list) or len(rot) < 2:
             rot = [0.0, 0.0]
+        view = data.get("viewDirection", [0.0, 0.0, 0.0])
+        if not isinstance(view, list) or len(view) < 3:
+            view = [0.0, 0.0, 0.0]
         return cls(
             id=str(data.get("id") or generate_id()),
             name=str(data.get("name", "")),
@@ -90,6 +97,9 @@ class FakePlayer:
             pitch=float(rot[0]),
             yaw=float(rot[1]),
             created=str(data.get("created", "")) or format_date_time_beijing(),
+            view_x=float(view[0]),
+            view_y=float(view[1]),
+            view_z=float(view[2]),
         )
 
     def mark_seen(self, x: float, y: float, z: float, dimension: str) -> bool:
