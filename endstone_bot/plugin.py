@@ -223,6 +223,9 @@ class BotPlugin(Plugin):
             "respawn_failed": f"假人 {name} 重生失败，请稍后再试。",
             "not_found": f"假人 {name} 当前不在线。",
             "use_failed": f"假人 {name} 无法使用背包中的三叉戟。",
+            "enchanted_trident_unsupported": f"假人 {name} 的三叉戟带有附魔；当前版本只支持普通无附魔三叉戟。",
+            "invalid_direction": f"无法读取你的投掷方向，请重新瞄准后再试。",
+            "projectile_failed": f"假人 {name} 无法生成有效的三叉戟投射物。",
         }
         message = (
             f"假人 {name} 已按你的视角投掷三叉戟。"
