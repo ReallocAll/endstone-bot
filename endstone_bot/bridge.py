@@ -4,7 +4,6 @@ import json
 import secrets
 import time
 from typing import Any
-from urllib.parse import unquote
 
 from endstone.event import ScriptMessageEvent
 
@@ -129,7 +128,7 @@ class BridgeManager:
             return None
         msg_id = event_name if event_name.startswith("bot:") else f"bot:{event_name}"
         try:
-            raw = unquote(str(encoded_payload or ""))
+            raw = bytes.fromhex(str(encoded_payload or "")).decode("utf-8")
             data = json.loads(raw)
         except Exception:
             self._logger.debug(f"忽略无法解析的 botbridge 回包: {event_name}")
