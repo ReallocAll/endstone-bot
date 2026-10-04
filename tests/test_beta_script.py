@@ -1,6 +1,7 @@
 import importlib.util
-import runpy
+import os
 import struct
+import subprocess
 import sys
 import tempfile
 import types
@@ -46,24 +47,37 @@ class BetaScriptTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_generated_script_uses_exact_world_path(self):
+    def test_generated_script_uses_exact_world_path_and_no_plugin_imports(self):
         script = beta_script.write_patch_script(self.data, self.world)
 
         self.assertEqual(script, self.data / "enable_beta.py")
         source = script.read_text(encoding="utf-8")
         self.assertIn(repr(str(self.level.resolve())), source)
         self.assertIn("BDS must be fully stopped", source)
+        self.assertNotIn("from endstone_bot", source)
+        self.assertNotIn("import endstone_bot", source)
         self.assertNotIn("atexit", source)
         self.assertNotIn("subprocess", source)
+        self.assertNotIn("__LEVEL_DAT_LITERAL__", source)
+        self.assertNotIn("__WORLD_NAME_LITERAL__", source)
 
-    def test_generated_script_patches_level_dat_when_explicitly_run(self):
+    def test_generated_script_runs_in_isolated_python_without_package(self):
         script = beta_script.write_patch_script(self.data, self.world)
-        namespace = runpy.run_path(str(script), run_name="endstone_bot_manual_beta_patch")
-
         self.assertFalse(level_dat.is_beta_apis_enabled(self.level))
-        rc = namespace["main"]()
 
-        self.assertEqual(rc, 0)
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        result = subprocess.run(
+            [sys.executable, "-I", str(script)],
+            cwd=self.root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stdout + "\n" + result.stderr)
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
         self.assertTrue(level_dat.is_beta_apis_enabled(self.level))
         backups = list((self.data / "level_dat_backups" / "level").glob("level.dat.*.bak"))
         self.assertEqual(len(backups), 1)
