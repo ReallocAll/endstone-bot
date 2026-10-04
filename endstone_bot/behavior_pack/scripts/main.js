@@ -23,7 +23,6 @@ const simulatedPlayers = new Map();
 const pendingSpawns = [];
 const tridentBusy = new Set();
 const deadPlayers = new Set();
-const aimTargets = new Set();
 const desiredPoses = new Map();
 
 function sourceKind(event) {
@@ -138,6 +137,22 @@ function validCommand(event, data) {
 }
 
 function poseRotation(req) {
+    const dx = Number(req.dx ?? 0);
+    const dy = Number(req.dy ?? 0);
+    const dz = Number(req.dz ?? 0);
+    const lengthSq = dx * dx + dy * dy + dz * dz;
+
+    if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
+        const invLength = 1 / Math.sqrt(lengthSq);
+        const nx = dx * invLength;
+        const ny = dy * invLength;
+        const nz = dz * invLength;
+        return {
+            x: -Math.asin(Math.max(-1, Math.min(1, ny))) * 180 / Math.PI,
+            y: Math.atan2(-nx, nz) * 180 / Math.PI,
+        };
+    }
+
     const pitchRaw = Number(req.pitch ?? 0);
     const yawRaw = Number(req.yaw ?? 0);
     const pitch = Number.isFinite(pitchRaw) ? Math.max(-90, Math.min(90, pitchRaw)) : 0;
@@ -178,8 +193,13 @@ function teleportSim(sim, req) {
     const dimension = getDimension(req.d);
     sim.teleport(
         { x: Number(req.x), y: Number(req.y), z: Number(req.z) },
-        { dimension },
+        {
+            dimension,
+            rotation: poseRotation(req),
+        },
     );
+    // Keep the visible head/body aligned with the same saved world-space view.
+    // Native item use later consumes this already-synchronized player state.
     orientSim(sim, req);
 }
 
@@ -408,55 +428,10 @@ function restoreHotbarAfterTrident(sim, found, state, thrown) {
     } catch (_) {}
 }
 
-function removeAimTarget(target) {
-    if (!target) return;
-    aimTargets.delete(target);
+function playerWithinOneBlock(sim) {
     try {
-        if (target.isValid) target.remove();
-    } catch (_) {}
-}
-
-function createAimTarget(sim, pose) {
-    const dx = Number(pose.dx ?? 0);
-    const dy = Number(pose.dy ?? 0);
-    const dz = Number(pose.dz ?? 0);
-    const lengthSq = dx * dx + dy * dy + dz * dz;
-    if (!Number.isFinite(lengthSq) || lengthSq <= 1e-8) {
-        throw new Error("saved view direction is invalid");
-    }
-
-    const invLength = 1 / Math.sqrt(lengthSq);
-    const head = sim.getHeadLocation();
-    const targetLocation = {
-        x: head.x + dx * invLength * 32,
-        y: head.y + dy * invLength * 32,
-        z: head.z + dz * invLength * 32,
-    };
-
-    const target = sim.dimension.spawnEntity("minecraft:armor_stand", targetLocation);
-    aimTargets.add(target);
-    try {
-        target.addEffect("invisibility", 40, {
-            amplifier: 0,
-            showParticles: false,
-        });
-    } catch (_) {}
-
-    sim.lookAtEntity(
-        target,
-        GameTest.LookDuration?.Continuous ?? "Continuous",
-    );
-    return target;
-}
-
-function playerWithinOneBlock(sim, pose) {
-    try {
-        const location = {
-            x: Number(pose.x),
-            y: Number(pose.y),
-            z: Number(pose.z),
-        };
-        const dimension = getDimension(pose.d);
+        const location = sim.location;
+        const dimension = sim.dimension;
         const simId = String(sim.id || "");
         const players = dimension.getPlayers({
             location,
@@ -469,9 +444,9 @@ function playerWithinOneBlock(sim, pose) {
                 if (simId && String(player.id || "") === simId) continue;
 
                 const p = player.location;
-                const dx = Number(p.x) - location.x;
-                const dy = Number(p.y) - location.y;
-                const dz = Number(p.z) - location.z;
+                const dx = Number(p.x) - Number(location.x);
+                const dy = Number(p.y) - Number(location.y);
+                const dz = Number(p.z) - Number(location.z);
                 if (dx * dx + dy * dy + dz * dz <= 1.0) {
                     return player;
                 }
@@ -503,7 +478,7 @@ function doThrowTrident(req) {
         return;
     }
 
-    if (playerWithinOneBlock(sim, pose)) {
+    if (playerWithinOneBlock(sim)) {
         tridentResult(name, requester, false, "player_too_close");
         return;
     }
@@ -516,18 +491,12 @@ function doThrowTrident(req) {
 
     tridentBusy.add(name);
     let slotState = null;
-    let aimTarget = null;
 
     try {
-        teleportSim(sim, pose);
+        // Position and rotation were synchronized earlier by "move here".
+        // Throwing must not teleport, rotate, or otherwise rewrite that state.
         slotState = swapTridentIntoHotbarZero(sim, found);
-
-        // FlashFakePlayerPack uses lookAtEntity for actions that need to alter
-        // the SimulatedPlayer controller direction. BDS 26.51 visually applies
-        // lookAtLocation but native item use can keep the old controller aim.
-        aimTarget = createAimTarget(sim, pose);
     } catch (e) {
-        removeAimTarget(aimTarget);
         tridentBusy.delete(name);
         if (slotState) restoreHotbarAfterTrident(sim, found, slotState, false);
         tridentResult(name, requester, false, `prepare_failed:${String(e)}`);
@@ -536,29 +505,19 @@ function doThrowTrident(req) {
 
     system.runTimeout(() => {
         try {
-            if (playerWithinOneBlock(sim, pose)) {
-                removeAimTarget(aimTarget);
+            if (playerWithinOneBlock(sim)) {
                 restoreHotbarAfterTrident(sim, found, slotState, false);
                 tridentBusy.delete(name);
                 tridentResult(name, requester, false, "player_too_close");
                 return;
             }
-
-            // Keep the target alive and continuously tracked for the entire
-            // charge so the controller aim remains current at release time.
-            sim.lookAtEntity(
-                aimTarget,
-                GameTest.LookDuration?.Continuous ?? "Continuous",
-            );
             if (!sim.useItemInSlot(0)) {
-                removeAimTarget(aimTarget);
                 restoreHotbarAfterTrident(sim, found, slotState, false);
                 tridentBusy.delete(name);
                 tridentResult(name, requester, false, "use_failed");
                 return;
             }
         } catch (e) {
-            removeAimTarget(aimTarget);
             restoreHotbarAfterTrident(sim, found, slotState, false);
             tridentBusy.delete(name);
             tridentResult(name, requester, false, `use_failed:${String(e)}`);
@@ -568,15 +527,10 @@ function doThrowTrident(req) {
         system.runTimeout(() => {
             let thrown = false;
             try {
-                // Release while the controller is still continuously looking at
-                // the temporary target. Remove the target immediately after the
-                // native projectile has been created.
                 sim.stopUsingItem();
-                removeAimTarget(aimTarget);
                 const remaining = found.container.getItem(0);
                 thrown = !remaining || remaining.typeId !== "minecraft:trident";
             } catch (e) {
-                removeAimTarget(aimTarget);
                 restoreHotbarAfterTrident(sim, found, slotState, false);
                 tridentBusy.delete(name);
                 tridentResult(name, requester, false, `release_failed:${String(e)}`);
@@ -609,7 +563,6 @@ function clearAll() {
         desiredPoses.delete(name);
     }
     pendingSpawns.length = 0;
-    for (const target of Array.from(aimTargets)) removeAimTarget(target);
     reply("bot:cleared", { count: entries.length });
 }
 
