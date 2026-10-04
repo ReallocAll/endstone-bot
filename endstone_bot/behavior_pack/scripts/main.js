@@ -67,11 +67,25 @@ function getDimension(value) {
     return world.getDimension(dimensionId(value));
 }
 
+function utf8Hex(text) {
+    const escaped = encodeURIComponent(String(text));
+    let hex = "";
+    for (let i = 0; i < escaped.length; i++) {
+        if (escaped[i] === "%") {
+            hex += escaped.slice(i + 1, i + 3).toLowerCase();
+            i += 2;
+        } else {
+            hex += escaped.charCodeAt(i).toString(16).padStart(2, "0");
+        }
+    }
+    return hex;
+}
+
 function reply(eventId, data) {
     if (!bridgeToken) return false;
     const payload = { ...data, t: bridgeToken, p: PROTOCOL };
     const msg = JSON.stringify(payload);
-    const encoded = encodeURIComponent(msg);
+    const encoded = utf8Hex(msg);
     const eventName = String(eventId || "").replace(/^bot:/, "");
     if (encoded.length > 6000) {
         console.warn(`[EndstoneBot] refusing oversized callback ${eventId}: ${encoded.length} chars`);
