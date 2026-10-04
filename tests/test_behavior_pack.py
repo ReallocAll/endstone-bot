@@ -48,6 +48,13 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("sim.lookAtLocation(target", self.source)
         self.assertNotIn("sim.setBodyRotation(", self.source)
 
+    def test_trident_refuses_other_players_within_one_block(self):
+        self.assertIn("playerWithinOneBlock(sim, pose)", self.source)
+        self.assertIn("maxDistance: 1.01", self.source)
+        self.assertIn("dx * dx + dy * dy + dz * dz <= 1.0", self.source)
+        self.assertIn("player_too_close", self.source)
+        self.assertIn("if (player === sim) continue", self.source)
+
     def test_view_direction_is_preserved(self):
         self.assertIn("req.dx", self.source)
         self.assertIn("req.dy", self.source)
