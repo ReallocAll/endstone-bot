@@ -25,6 +25,9 @@ classifiers = [
     "Topic :: Games/Entertainment",
 ]
 
+[project.scripts]
+endstone-bot-enable-beta = "endstone_bot.level_dat:main"
+
 [project.urls]
 Homepage = "https://github.com/ReallocAll/endstone-bot"
 Repository = "https://github.com/ReallocAll/endstone-bot"
