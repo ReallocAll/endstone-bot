@@ -7,10 +7,10 @@ from typing import Any
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 3,
+    "version": 4,
     "limits": {
-        "max_total": 6,
-        "max_per_player": 1,
+        "max_total": 10,
+        "max_per_player": 0,
         "spawn_cooldown_seconds": 10,
     },
     "position_guard": {
@@ -92,6 +92,23 @@ class SettingsManager:
                 for key in ("max_total", "max_per_player", "spawn_cooldown_seconds"):
                     if key in limits:
                         cfg["limits"][key] = limits[key]
+
+                # Schema v3 shipped 6 total / 1 per player / 10s as one exact
+                # untouched default tuple. Migrate only that tuple so servers
+                # with intentional custom values are never overwritten.
+                try:
+                    source_version = int(data.get("version", 0))
+                    old_defaults = (
+                        int(limits.get("max_total", 6)),
+                        int(limits.get("max_per_player", 1)),
+                        int(limits.get("spawn_cooldown_seconds", 10)),
+                    )
+                    if source_version < 4 and old_defaults == (6, 1, 10):
+                        cfg["limits"]["max_total"] = 10
+                        cfg["limits"]["max_per_player"] = 0
+                except (TypeError, ValueError):
+                    pass
+
             guard = data.get("position_guard")
             if isinstance(guard, dict):
                 for key in ("enabled", "interval_ticks", "distance"):
@@ -131,8 +148,8 @@ class SettingsManager:
 
     def _sanitize_config(self, cfg: dict[str, Any]) -> None:
         limits = cfg["limits"]
-        limits["max_total"] = max(1, min(128, int(limits.get("max_total", 6))))
-        limits["max_per_player"] = max(0, min(64, int(limits.get("max_per_player", 1))))
+        limits["max_total"] = max(1, min(128, int(limits.get("max_total", 10))))
+        limits["max_per_player"] = max(0, min(64, int(limits.get("max_per_player", 0))))
         limits["spawn_cooldown_seconds"] = max(
             0, min(3600, int(limits.get("spawn_cooldown_seconds", 10)))
         )
