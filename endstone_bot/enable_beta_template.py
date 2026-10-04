@@ -8,8 +8,8 @@
 #   python plugins/bot/enable_beta.py
 #
 # This file is intentionally self-contained and uses only Python's standard
-# library. It does not import endstone_bot and does not require the plugin wheel
-# to be importable by this interpreter.
+# library. It does not require the plugin package, its wheel, PYTHONPATH, or
+# Endstone to be importable by this interpreter.
 
 from __future__ import annotations
 
