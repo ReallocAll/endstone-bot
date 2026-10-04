@@ -44,9 +44,10 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn('world.structureManager.get(structureId)', self.source)
         self.assertIn('startSimulatedPlayerGameTest()', self.source)
 
-    def test_move_uses_simulated_player_controller_view_until_move(self):
+    def test_move_uses_gametest_relative_controller_view_until_move(self):
         self.assertIn("sim.lookAtLocation(", self.source)
         self.assertIn('GameTest.LookDuration?.UntilMove ?? "UntilMove"', self.source)
+        self.assertIn("const relativeTarget = activeTest.relativeLocation(target)", self.source)
         self.assertIn("head.x + dx * invLength * 32", self.source)
         self.assertIn("head.y + dy * invLength * 32", self.source)
         self.assertIn("head.z + dz * invLength * 32", self.source)
