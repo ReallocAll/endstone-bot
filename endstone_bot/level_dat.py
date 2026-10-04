@@ -123,13 +123,15 @@ def resolve_level_dat_for_startup(cwd: Path) -> WorldResolution:
 
         level_dat = world_dir / "level.dat"
         if level_dat.is_file():
-            matches.append((level_dat.resolve(), world_dir, root, level_name))
+            # Keep the lexical level.dat path so enable_beta_apis_safely can still
+            # detect and reject a symlink. Use resolve() only for deduplication.
+            matches.append((level_dat, world_dir, root, level_name))
         else:
             errors.append(f"{level_dat}: 不存在")
 
     unique: dict[Path, tuple[Path, Path, Path, str]] = {}
     for item in matches:
-        unique[item[0]] = item
+        unique[item[0].resolve()] = item
 
     if len(unique) == 1:
         level_dat, world_dir, root, level_name = next(iter(unique.values()))
