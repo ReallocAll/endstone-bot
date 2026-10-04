@@ -21,6 +21,12 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn('payload = self._pose_payload(fp)', block)
         self.assertIn("已保存的位置和视角", block)
 
+    def test_plugin_registers_decorated_event_handlers(self):
+        start = self.plugin_source.index("    def on_enable(")
+        end = self.plugin_source.index("\n    def _write_beta_patch_script(", start)
+        block = self.plugin_source[start:end]
+        self.assertIn("self.register_events(self)", block)
+
     def test_bridge_dispatch_uses_quiet_command_sender_wrapper(self):
         self.assertIn("CommandSenderWrapper", self.plugin_source)
         self.assertIn("on_message=lambda _message: None", self.plugin_source)
