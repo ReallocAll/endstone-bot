@@ -52,7 +52,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 1, 3]
+    BEHAVIOR_PACK_VERSION = [4, 1, 4]
 
     def on_load(self) -> None:
         """Patch Beta APIs before BDS reads the world, never after world load."""
