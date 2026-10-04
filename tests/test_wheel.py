@@ -32,6 +32,10 @@ class WheelTests(unittest.TestCase):
                 cfg.has_section("console_scripts")
                 and "endstone-bot-enable-beta" in cfg["console_scripts"]
             )
+            self.assertFalse(
+                any(name.endswith(".mcstructure") for name in names),
+                "static mcstructure files must not be shipped",
+            )
 
 
 if __name__ == "__main__":
