@@ -81,6 +81,13 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("req.dy", self.source)
         self.assertIn("req.dz", self.source)
 
+    def test_routine_bridge_handshake_is_quiet(self):
+        self.assertNotIn("hello received:", self.source)
+        self.assertNotIn("hello_ack dispatched", self.source)
+        self.assertNotIn("bridge loaded, protocol=", self.source)
+        self.assertIn("callback failed", self.source)
+        self.assertIn("rejected malformed hello payload", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
