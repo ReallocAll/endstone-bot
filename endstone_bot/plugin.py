@@ -143,12 +143,11 @@ class BotPlugin(Plugin):
             name = str(data.get("n", ""))
             ok = bool(data.get("ok", False))
             self.manager.mark_spawned(name, ok)
-            if ok:
+            if ok and not data.get("existed") and not data.get("respawned"):
                 self.logger.info(f"假人 {name} 已生成。")
             return
-        if msg_id == "bot:trident_thrown":
-            name = str(data.get("n", ""))
-            self.logger.info(f"假人 {name} 已投掷三叉戟。")
+        if msg_id == "bot:trident_result":
+            self._handle_trident_result(data)
             return
         if msg_id == "bot:lost":
             fp = self.manager.get_by_name(str(data.get("n", "")))
@@ -184,6 +183,37 @@ class BotPlugin(Plugin):
             self.logger.warning(
                 f"行为包错误 [{data.get('n', '')}]: {data.get('e', 'unknown error')}"
             )
+
+    def _handle_trident_result(self, data: dict[str, Any]) -> None:
+        name = str(data.get("n", "") or "假人")
+        requester = str(data.get("r", "") or "")
+        ok = bool(data.get("ok", False))
+        reason = str(data.get("reason", "") or "")
+
+        messages = {
+            "no_trident": f"假人 {name} 的背包里没有三叉戟。",
+            "busy": f"假人 {name} 正在执行三叉戟动作。",
+            "respawning": f"假人 {name} 正在重生，请稍后再试。",
+            "respawn_failed": f"假人 {name} 重生失败，请稍后再试。",
+            "not_found": f"假人 {name} 当前不在线。",
+            "use_failed": f"假人 {name} 无法使用背包中的三叉戟。",
+        }
+        message = (
+            f"假人 {name} 已按你的视角投掷三叉戟。"
+            if ok
+            else messages.get(reason.split(":", 1)[0], f"假人 {name} 投掷三叉戟失败。")
+        )
+
+        if requester:
+            for player in self.server.online_players:
+                try:
+                    if str(player.name).lower() == requester.lower():
+                        player.send_message(("§a" if ok else "§c") + message)
+                        return
+                except Exception:
+                    continue
+        if not ok:
+            self.logger.warning(f"三叉戟操作失败 [{name}]: {reason or 'unknown'}")
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
         command_name = command.name.lower()
