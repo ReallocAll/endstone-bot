@@ -143,7 +143,11 @@ class BotGUI:
         bridge = "§a正常" if self._plugin.bridge.active else "§c离线"
         form = ActionForm(
             title="§l§c假人管理员",
-            content=f"桥接：{bridge}§r\n全服假人：§f{len(self._plugin.manager.bots)}",
+            content=(
+                f"桥接：{bridge}§r\n"
+                f"全服假人：§f{len(self._plugin.manager.bots)} / §f{self._plugin.settings.max_total}\n"
+                f"普通玩家默认上限：§f{self._plugin.settings.max_per_player}"
+            ),
         )
         form.add_button("§e全服假人\n查看和管理全部假人", on_click=lambda p: self.open_admin_bots(p))
         form.add_button("§6玩家限制\n为普通玩家调整或解除限制", on_click=lambda p: self.open_limit_players(p))
@@ -297,9 +301,9 @@ class BotGUI:
         form = ModalForm(
             title="§l§5全局假人设置",
             controls=[
-                Slider(label="全服默认总上限", min=1, max=32, step=1, default_value=float(min(32, self._plugin.settings.max_total))),
-                Slider(label="普通玩家默认上限", min=0, max=8, step=1, default_value=float(min(8, self._plugin.settings.max_per_player))),
-                Slider(label="默认创建冷却（秒）", min=0, max=60, step=1, default_value=float(min(60, self._plugin.settings.spawn_cooldown_seconds))),
+                Slider(label="全服假人总上限", min=1, max=128, step=1, default_value=float(min(128, self._plugin.settings.max_total))),
+                Slider(label="普通玩家默认上限", min=0, max=64, step=1, default_value=float(min(64, self._plugin.settings.max_per_player))),
+                Slider(label="默认创建冷却（秒）", min=0, max=3600, step=1, default_value=float(min(3600, self._plugin.settings.spawn_cooldown_seconds))),
                 Toggle(label="启用挂机位置守护", default_value=self._plugin.settings.guard_enabled),
                 Slider(label="位置守护距离（方块）", min=0.5, max=8.0, step=0.5, default_value=float(max(0.5, min(8.0, self._plugin.settings.guard_distance)))),
             ],
