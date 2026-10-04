@@ -1,239 +1,348 @@
 /**
- * EndstoneBot 假人桥接行为包脚本。
+ * Endstone Bot bridge v4.
  *
- * 通过 @minecraft/server-gametest 的 SimulatedPlayer API
- * 为 Endstone 插件提供模拟玩家生成能力。
+ * Security model:
+ * - handshake is accepted only from ScriptEvent sourceType=Server
+ * - the first valid bot:hello establishes the per-process token
+ * - every later command must carry the exact same token and protocol
  *
- * 通信协议（通过 scriptevent 命令）:
- *
- * Endstone → 行为包:
- *   bot:ping          — 检测行为包是否活跃
- *   bot:spawn         — 生成模拟玩家 {"n":"名字","x":1.0,"y":64.0,"z":1.0,"d":"overworld"}
- *   bot:remove        — 移除模拟玩家 {"n":"名字"}
- *   bot:teleport      — 传送模拟玩家 {"n":"名字","x":1.0,"y":64.0,"z":1.0,"d":"overworld"}
- *   bot:list          — 列出所有模拟玩家
- *
- * 行为包 → Endstone:
- *   bot:pong          — 响应 ping
- *   bot:spawned       — 生成完成 {"n":"名字","ok":true}
- *   bot:removed       — 移除完成 {"n":"名字"}
- *   bot:list_result   — 列表结果 {"names":["name1","name2"]}
- *   bot:error         — 错误 {"n":"名字","e":"错误信息"}
+ * Protocol 2 intentionally keeps the bridge small: spawn/remove/teleport/list/clear,
+ * heartbeat, spawn acknowledgements, loss notifications, and batched positions.
  */
 
-import { register, Tags } from "@minecraft/server-gametest";
+import * as GameTest from "@minecraft/server-gametest";
 import { system, world } from "@minecraft/server";
 
-// 活跃的 GameTest 对象（用于 spawnSimulatedPlayer）
+const PROTOCOL = 2;
+const MAX_MESSAGE_CHARS = 1400;
+let bridgeToken = "";
 let activeTest = null;
 
-// 已生成的模拟玩家映射: name → SimulatedPlayer
 const simulatedPlayers = new Map();
-
-// 待处理的生成请求队列（GameTest 未就绪时排队）
 const pendingSpawns = [];
 
-// 鉴权令牌（从 Endstone 插件的 ping 消息中获取）
-let bridgeToken = "";
+function isServerSource(event) {
+    try {
+        return String(event.sourceType ?? "").toLowerCase().includes("server");
+    } catch (_) {
+        return false;
+    }
+}
 
-/**
- * 发送 scriptevent 回复给 Endstone（携带鉴权令牌）。
- */
+function parseMessage(event) {
+    try {
+        const data = event.message ? JSON.parse(event.message) : {};
+        return data && typeof data === "object" ? data : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function dimensionId(value) {
+    const raw = String(value || "overworld").replace("minecraft:", "");
+    if (raw === "nether" || raw === "the_nether") return "nether";
+    if (raw === "end" || raw === "the_end") return "the_end";
+    return "overworld";
+}
+
+function getDimension(value) {
+    return world.getDimension(dimensionId(value));
+}
+
 function reply(eventId, data) {
+    if (!bridgeToken) return false;
+    const payload = { ...data, t: bridgeToken, p: PROTOCOL };
+    const msg = JSON.stringify(payload);
+    if (msg.length > 2048) {
+        console.warn(`[EndstoneBot] refusing oversized ${eventId}: ${msg.length} chars`);
+        return false;
+    }
     try {
-        const payload = { ...data, t: bridgeToken };
-        const msg = JSON.stringify(payload);
         world.getDimension("overworld").runCommand(`scriptevent ${eventId} ${msg}`);
+        return true;
     } catch (e) {
-        console.warn(`[EndstoneBot] 回复失败: ${e}`);
+        console.warn(`[EndstoneBot] reply failed (${eventId}): ${e}`);
+        return false;
     }
 }
 
-/**
- * 注册 GameTest（永久运行，提供 Test 对象用于 spawnSimulatedPlayer）。
- */
-register("endstone_bot", "sim_spawner", (test) => {
-    activeTest = test;
+function validCommand(event, data) {
+    if (!isServerSource(event)) return false;
+    if (!bridgeToken) return false;
+    if (data.t !== bridgeToken) return false;
+    return Number(data.p) === PROTOCOL;
+}
 
-    // 处理排队的生成请求
-    while (pendingSpawns.length > 0) {
-        const req = pendingSpawns.shift();
-        doSpawnSimulatedPlayer(req);
+function teleportSim(sim, req) {
+    const dimension = getDimension(req.d);
+    sim.teleport(
+        { x: Number(req.x), y: Number(req.y), z: Number(req.z) },
+        { dimension },
+    );
+}
+
+function spawnWithGlobalApi(req) {
+    const fn = GameTest.spawnSimulatedPlayer;
+    if (typeof fn !== "function") return null;
+    const dimension = getDimension(req.d);
+    return fn(
+        {
+            dimension,
+            x: Number(req.x),
+            y: Number(req.y),
+            z: Number(req.z),
+        },
+        String(req.n),
+    );
+}
+
+function spawnWithTestApi(req) {
+    if (!activeTest) return null;
+    const sim = activeTest.spawnSimulatedPlayer({ x: 0, y: 2, z: 0 }, String(req.n));
+    if (sim) teleportSim(sim, req);
+    return sim;
+}
+
+function doSpawn(req) {
+    const name = String(req.n || "");
+    if (!name) return;
+    const existing = simulatedPlayers.get(name);
+    if (existing) {
+        try {
+            if (existing.isValid) {
+                reply("bot:spawned", { n: name, ok: true, existed: true });
+                return;
+            }
+        } catch (_) {}
+        simulatedPlayers.delete(name);
     }
-})
-    .structureName("endstone_bot:empty")
-    .maxTicks(0x7FFFFFFF)
-    .tag(Tags.suiteDefault);
 
-/**
- * 生成模拟玩家。
- */
-function doSpawnSimulatedPlayer(req) {
-    if (!activeTest) {
-        pendingSpawns.push(req);
-        return;
-    }
-
-    const name = req.n;
-    if (simulatedPlayers.has(name)) {
-        // 已存在同名玩家：幂等返回成功（existed=true），
-        // 避免 Endstone 自愈任务每 40 tick 重发时刷错误日志
-        reply("bot:spawned", { n: name, ok: true, existed: true });
-        return;
-    }
-
+    let sim = null;
+    let globalError = null;
     try {
-        const loc = { x: req.x, y: req.y, z: req.z };
-        const sim = activeTest.spawnSimulatedPlayer(loc, name);
-
-        if (sim) {
-            simulatedPlayers.set(name, sim);
-            reply("bot:spawned", { n: name, ok: true });
-
-            // 监听玩家离开（SimulatedPlayer 被踢/断开）
-            // SimulatedPlayer 会在 world.afterEvents.playerLeave 时被清理
-        } else {
-            reply("bot:error", { n: name, e: "spawnSimulatedPlayer 返回 null" });
-        }
+        sim = spawnWithGlobalApi(req);
     } catch (e) {
-        reply("bot:error", { n: name, e: String(e) });
+        globalError = e;
     }
+
+    if (!sim) {
+        try {
+            sim = spawnWithTestApi(req);
+        } catch (e) {
+            reply("bot:error", { n: name, e: `spawn fallback failed: ${String(e)}` });
+            return;
+        }
+    }
+
+    if (!sim) {
+        if (!activeTest && typeof GameTest.spawnSimulatedPlayer !== "function") {
+            if (!pendingSpawns.some((x) => String(x.n) === name)) pendingSpawns.push(req);
+            return;
+        }
+        reply("bot:error", {
+            n: name,
+            e: globalError ? `spawn failed: ${String(globalError)}` : "spawnSimulatedPlayer returned null",
+        });
+        return;
+    }
+
+    simulatedPlayers.set(name, sim);
+    reply("bot:spawned", { n: name, ok: true });
 }
 
-/**
- * 移除模拟玩家。
- */
-function doRemoveSimulatedPlayer(name) {
+function finishRemove(name, sim) {
+    system.runTimeout(() => {
+        try {
+            if (sim.isValid) {
+                reply("bot:error", { n: name, e: "disconnect did not invalidate SimulatedPlayer" });
+                return;
+            }
+        } catch (_) {}
+        if (simulatedPlayers.get(name) === sim) simulatedPlayers.delete(name);
+        reply("bot:removed", { n: name });
+    }, 2);
+}
+
+function doRemove(nameValue) {
+    const name = String(nameValue || "");
     const sim = simulatedPlayers.get(name);
     if (!sim) {
-        reply("bot:error", { n: name, e: "模拟玩家不存在" });
+        reply("bot:removed", { n: name, existed: false });
         return;
     }
-
     try {
         sim.disconnect();
     } catch (e) {
-        // disconnect 可能抛异常，忽略
+        reply("bot:error", { n: name, e: `disconnect failed: ${String(e)}` });
+        return;
     }
-
-    simulatedPlayers.delete(name);
-    reply("bot:removed", { n: name });
+    finishRemove(name, sim);
 }
 
-/**
- * 传送模拟玩家。
- */
-function doTeleportSimulatedPlayer(req) {
-    const name = req.n;
+function doTeleport(req) {
+    const name = String(req.n || "");
     const sim = simulatedPlayers.get(name);
     if (!sim) {
-        reply("bot:error", { n: name, e: "模拟玩家不存在" });
+        reply("bot:error", { n: name, e: "SimulatedPlayer not found" });
         return;
     }
-
     try {
-        sim.teleport({ x: req.x, y: req.y, z: req.z }, { dimension: world.getDimension(req.d || "overworld") });
+        teleportSim(sim, req);
         reply("bot:teleported", { n: name });
     } catch (e) {
-        reply("bot:error", { n: name, e: String(e) });
+        reply("bot:error", { n: name, e: `teleport failed: ${String(e)}` });
     }
 }
 
-/**
- * 监听 scriptevent 命令。
- */
-system.afterEvents.scriptEventReceive.subscribe((event) => {
-    // 只处理 bot 命名空间
-    if (!event.id.startsWith("bot:")) {
+function clearAll() {
+    const entries = Array.from(simulatedPlayers.entries());
+    for (const [name, sim] of entries) {
+        try {
+            sim.disconnect();
+        } catch (_) {}
+        simulatedPlayers.delete(name);
+    }
+    pendingSpawns.length = 0;
+    reply("bot:cleared", { count: entries.length });
+}
+
+function sendList() {
+    const names = Array.from(simulatedPlayers.keys());
+    if (names.length === 0) {
+        reply("bot:list_result", { reset: true, done: true, names: [] });
         return;
     }
-
-    console.log(`[EndstoneBot] 收到 scriptevent: ${event.id} 源=${event.sourceType}`);
-    let data = {};
-    try {
-        if (event.message && event.message.length > 0) {
-            data = JSON.parse(event.message);
+    let batch = [];
+    let first = true;
+    for (const name of names) {
+        const candidate = [...batch, name];
+        const probe = JSON.stringify({ reset: first, done: false, names: candidate, t: bridgeToken, p: PROTOCOL });
+        if (batch.length > 0 && probe.length > MAX_MESSAGE_CHARS) {
+            reply("bot:list_result", { reset: first, done: false, names: batch });
+            first = false;
+            batch = [name];
+        } else {
+            batch = candidate;
         }
-    } catch (e) {
-        console.warn(`[EndstoneBot] JSON 解析失败: ${event.message}`);
+    }
+    reply("bot:list_result", { reset: first, done: true, names: batch });
+}
+
+function flushPositions(report) {
+    if (report.length === 0) return;
+    let batch = [];
+    for (const item of report) {
+        const candidate = [...batch, item];
+        const probe = JSON.stringify({ p: candidate, t: bridgeToken, protocol: PROTOCOL });
+        if (batch.length > 0 && probe.length > MAX_MESSAGE_CHARS) {
+            reply("bot:positions", { p: batch });
+            batch = [item];
+        } else {
+            batch = candidate;
+        }
+    }
+    if (batch.length > 0) reply("bot:positions", { p: batch });
+}
+
+try {
+    if (typeof GameTest.register === "function") {
+        let registration = GameTest.register("endstone_bot", "sim_spawner", (test) => {
+            activeTest = test;
+            while (pendingSpawns.length > 0) doSpawn(pendingSpawns.shift());
+        }).structureName("endstone_bot:empty").maxTicks(0x7fffffff);
+        if (GameTest.Tags && GameTest.Tags.suiteDefault) {
+            registration = registration.tag(GameTest.Tags.suiteDefault);
+        }
+    }
+} catch (e) {
+    console.warn(`[EndstoneBot] fallback GameTest registration failed: ${e}`);
+}
+
+system.afterEvents.scriptEventReceive.subscribe((event) => {
+    if (!String(event.id || "").startsWith("bot:")) return;
+    const data = parseMessage(event);
+    if (!data) return;
+
+    if (event.id === "bot:hello") {
+        if (!isServerSource(event)) return;
+        if (Number(data.p) !== PROTOCOL || typeof data.t !== "string" || data.t.length < 16) return;
+        if (bridgeToken && data.t !== bridgeToken) {
+            return;
+        }
+        bridgeToken = data.t;
+        reply("bot:hello_ack", { ok: true });
         return;
     }
 
-    // 提取鉴权令牌（所有来自 Endstone 的消息都携带 t 字段）
-    if (data.t) {
-        bridgeToken = data.t;
-    }
+    if (!validCommand(event, data)) return;
 
-    const action = event.id;
-    switch (action) {
+    switch (event.id) {
         case "bot:ping":
-            // pong 携带当前管理的玩家列表，Endstone 用于对照重置确认状态
-            reply("bot:pong", { names: Array.from(simulatedPlayers.keys()) });
+            reply("bot:pong", {});
             break;
-
         case "bot:spawn":
-            doSpawnSimulatedPlayer(data);
+            doSpawn(data);
             break;
-
         case "bot:remove":
-            doRemoveSimulatedPlayer(data.n);
+            doRemove(data.n);
             break;
-
         case "bot:teleport":
-            doTeleportSimulatedPlayer(data);
+            doTeleport(data);
             break;
-
         case "bot:list":
-            reply("bot:list_result", { names: Array.from(simulatedPlayers.keys()) });
+            sendList();
             break;
-
+        case "bot:clear":
+            clearAll();
+            break;
+        case "bot:shutdown":
+            clearAll();
+            system.runTimeout(() => { bridgeToken = ""; }, 1);
+            break;
         default:
             break;
     }
 });
 
-/**
- * 行为包心跳：每 100 tick（5 秒）无条件向 Endstone 发送 pong，
- * 让插件通过时间戳判定行为包活性，消除"行为包未响应"误报。
- */
+try {
+    world.afterEvents.playerLeave.subscribe((event) => {
+        const name = String(event.playerName || "");
+        if (simulatedPlayers.has(name)) {
+            simulatedPlayers.delete(name);
+            reply("bot:lost", { n: name });
+        }
+    });
+} catch (_) {}
+
 system.runInterval(() => {
-    reply("bot:pong", { names: Array.from(simulatedPlayers.keys()) });
+    if (!bridgeToken) return;
+    reply("bot:heartbeat", {});
 }, 100);
 
-/**
- * 每 100 tick：清理失效的模拟玩家 + 上报所有模拟玩家坐标。
- * 坐标上报使 Endstone 侧能持久化 simulated 假人位置（重启后恢复）。
- */
 system.runInterval(() => {
-    if (simulatedPlayers.size === 0) return;
-
+    if (!bridgeToken || simulatedPlayers.size === 0) return;
     const report = [];
-    for (const [name, sim] of simulatedPlayers) {
+    for (const [name, sim] of Array.from(simulatedPlayers.entries())) {
         try {
             if (!sim.isValid) {
                 simulatedPlayers.delete(name);
+                reply("bot:lost", { n: name });
                 continue;
             }
             const loc = sim.location;
-            const dim = sim.dimension ? sim.dimension.id : "overworld";
             report.push({
                 n: name,
                 x: Math.round(loc.x * 100) / 100,
                 y: Math.round(loc.y * 100) / 100,
                 z: Math.round(loc.z * 100) / 100,
-                d: dim,
+                d: sim.dimension ? sim.dimension.id : "minecraft:overworld",
             });
-        } catch (e) {
+        } catch (_) {
             simulatedPlayers.delete(name);
+            reply("bot:lost", { n: name });
         }
     }
-
-    // 未完成鉴权握手（Endstone 尚未 ping）时不上报，避免无效消息
-    if (report.length > 0 && bridgeToken) {
-        reply("bot:positions", { p: report });
-    }
+    flushPositions(report);
 }, 100);
 
-console.log("[EndstoneBot] 假人桥接行为包已加载");
-
-
+console.log(`[EndstoneBot] bridge loaded, protocol=${PROTOCOL}`);
