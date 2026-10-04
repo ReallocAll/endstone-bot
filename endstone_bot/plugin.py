@@ -29,7 +29,7 @@ class BotPlugin(Plugin):
             "usages": [
                 "/bot",
                 "/bot (gui|list|status|admin|removeall)<action: BotSimpleAction>",
-                "/bot (spawn|remove|tp)<action: BotNamedAction> <name: str>",
+                "/bot (spawn|remove|tp|trident)<action: BotNamedAction> <name: str>",
                 "/bot (createat)<action: BotCreateAtAction> <name: str> <owner: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotDimension>",
                 "/bot (moveat)<action: BotMoveAtAction> <name: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotMoveDimension>",
                 "/bot (limit)<action: BotLimitAction> <player: str> (show|unlimited|default)<mode: BotLimitSimpleMode>",
@@ -146,6 +146,10 @@ class BotPlugin(Plugin):
             if ok:
                 self.logger.info(f"假人 {name} 已生成。")
             return
+        if msg_id == "bot:trident_thrown":
+            name = str(data.get("n", ""))
+            self.logger.info(f"假人 {name} 已投掷三叉戟。")
+            return
         if msg_id == "bot:lost":
             fp = self.manager.get_by_name(str(data.get("n", "")))
             if fp is not None:
@@ -236,6 +240,16 @@ class BotPlugin(Plugin):
                 self._send_error(sender, "假人不存在。")
                 return True
             ok, message = self.manager.move_here(sender, fp)
+            self._send_result(sender, ok, message)
+            return True
+        if action == "trident":
+            if len(args) < 2:
+                return True
+            fp = self.manager.get_by_name(str(args[1]))
+            if fp is None:
+                self._send_error(sender, "假人不存在。")
+                return True
+            ok, message = self.manager.throw_trident_here(sender, fp)
             self._send_result(sender, ok, message)
             return True
         if action == "createat":
