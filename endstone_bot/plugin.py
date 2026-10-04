@@ -152,7 +152,9 @@ class BotPlugin(Plugin):
         if msg_id == "bot:lost":
             fp = self.manager.get_by_name(str(data.get("n", "")))
             if fp is not None:
-                fp.sim_spawn_confirmed = False
+                reason = str(data.get("reason", "") or "")
+                if reason != "dead":
+                    fp.sim_spawn_confirmed = False
                 fp.sim_has_position = False
                 fp.sim_last_seen_at = 0.0
             return
