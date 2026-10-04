@@ -137,22 +137,6 @@ function validCommand(event, data) {
 }
 
 function poseRotation(req) {
-    const dx = Number(req.dx ?? 0);
-    const dy = Number(req.dy ?? 0);
-    const dz = Number(req.dz ?? 0);
-    const lengthSq = dx * dx + dy * dy + dz * dz;
-
-    if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
-        const invLength = 1 / Math.sqrt(lengthSq);
-        const nx = dx * invLength;
-        const ny = dy * invLength;
-        const nz = dz * invLength;
-        return {
-            x: -Math.asin(Math.max(-1, Math.min(1, ny))) * 180 / Math.PI,
-            y: Math.atan2(-nx, nz) * 180 / Math.PI,
-        };
-    }
-
     const pitchRaw = Number(req.pitch ?? 0);
     const yawRaw = Number(req.yaw ?? 0);
     const pitch = Number.isFinite(pitchRaw) ? Math.max(-90, Math.min(90, pitchRaw)) : 0;
@@ -167,25 +151,21 @@ function orientSim(sim, req) {
     const lengthSq = dx * dx + dy * dy + dz * dz;
 
     if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
-        const invLength = 1 / Math.sqrt(lengthSq);
         try {
             const head = sim.getHeadLocation();
-            const target = {
+            const invLength = 1 / Math.sqrt(lengthSq);
+            sim.lookAt({
                 x: head.x + dx * invLength * 32,
                 y: head.y + dy * invLength * 32,
                 z: head.z + dz * invLength * 32,
-            };
-            if (typeof sim.lookAtLocation === "function") {
-                sim.lookAtLocation(target, GameTest.LookDuration?.Instant ?? "Instant");
-            } else {
-                sim.lookAt(target);
-            }
+            });
             return;
         } catch (_) {}
     }
 
+    const rotation = poseRotation(req);
     try {
-        sim.setRotation(poseRotation(req));
+        sim.setRotation(rotation);
     } catch (_) {}
 }
 
@@ -193,13 +173,8 @@ function teleportSim(sim, req) {
     const dimension = getDimension(req.d);
     sim.teleport(
         { x: Number(req.x), y: Number(req.y), z: Number(req.z) },
-        {
-            dimension,
-            rotation: poseRotation(req),
-        },
+        { dimension },
     );
-    // Keep the visible head/body aligned with the same saved world-space view.
-    // Native item use later consumes this already-synchronized player state.
     orientSim(sim, req);
 }
 
