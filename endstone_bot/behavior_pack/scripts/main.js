@@ -160,11 +160,17 @@ function orientSim(sim, req) {
         };
 
         try {
-            // Use the SimulatedPlayer controller API, not Entity rotation.
-            // UntilMove keeps both pitch and yaw until the bot actually moves,
-            // which matches the saved-pose semantics used by trident throws.
+            if (!activeTest || typeof activeTest.relativeLocation !== "function") {
+                throw new Error("GameTest relativeLocation is unavailable");
+            }
+
+            // Test-bound SimulatedPlayer controller methods consume GameTest
+            // relative coordinates. The bot itself may be teleported anywhere
+            // in the world, so convert the desired absolute world target back
+            // into the owning Test coordinate system before lookAtLocation().
+            const relativeTarget = activeTest.relativeLocation(target);
             sim.lookAtLocation(
-                target,
+                relativeTarget,
                 GameTest.LookDuration?.UntilMove ?? "UntilMove",
             );
             return;
