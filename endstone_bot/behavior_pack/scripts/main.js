@@ -358,14 +358,31 @@ function verifyViewSync(name, sim, pose) {
                 expected.z * actual.z
             ) / (expectedLen * actualLen);
 
-            const expectedPitch = poseRotation(pose).x;
-            const actualRotation = sim.getRotation();
-            const pitchError = Math.abs(Number(actualRotation.x) - expectedPitch);
+            const expectedPitch = -Math.asin(
+                Math.max(-1, Math.min(1, expected.y / expectedLen))
+            ) * 180 / Math.PI;
 
-            if (dot < 0.98 || pitchError > 2.0) {
+            let headPitch = NaN;
+            let headYaw = NaN;
+            try {
+                headPitch = Number(sim.headRotation.x);
+                headYaw = Number(sim.headRotation.y);
+            } catch (_) {}
+
+            let entityPitch = NaN;
+            let entityYaw = NaN;
+            try {
+                const rotation = sim.getRotation();
+                entityPitch = Number(rotation.x);
+                entityYaw = Number(rotation.y);
+            } catch (_) {}
+
+            if (dot < 0.98) {
                 console.warn(
                     `[EndstoneBot] view sync mismatch [${name}]: dot=${dot.toFixed(4)} ` +
-                    `pitch=${Number(actualRotation.x).toFixed(2)}/${expectedPitch.toFixed(2)} ` +
+                    `expectedPitch=${expectedPitch.toFixed(2)} ` +
+                    `head=(${headPitch.toFixed(2)},${headYaw.toFixed(2)}) ` +
+                    `entity=(${entityPitch.toFixed(2)},${entityYaw.toFixed(2)}) ` +
                     `expected=(${expected.x.toFixed(4)},${expected.y.toFixed(4)},${expected.z.toFixed(4)}) ` +
                     `actual=(${actual.x.toFixed(4)},${actual.y.toFixed(4)},${actual.z.toFixed(4)})`
                 );
@@ -373,8 +390,9 @@ function verifyViewSync(name, sim, pose) {
         } catch (e) {
             console.warn(`[EndstoneBot] view sync verification failed [${name}]: ${e}`);
         }
-    }, 7);
+    }, 2);
 }
+
 function doTeleport(req) {
     const name = String(req.n || "");
     const pose = rememberPose(req);
