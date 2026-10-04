@@ -42,6 +42,20 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(fp.yaw, 91.25)
         self.assertEqual(fp.to_record()["rotation"], [-23.5, 91.25])
 
+    def test_view_direction_round_trips(self):
+        fp = FakePlayer.from_record({
+            "id": "v",
+            "name": "ViewBot",
+            "ownerName": "Alice",
+            "ownerUuid": "u",
+            "location": [1, 64, 2],
+            "dimension": "overworld",
+            "rotation": [10.0, 20.0],
+            "viewDirection": [0.25, -0.5, 0.75],
+        })
+        self.assertEqual((fp.view_x, fp.view_y, fp.view_z), (0.25, -0.5, 0.75))
+        self.assertEqual(fp.to_record()["viewDirection"], [0.25, -0.5, 0.75])
+
     def test_name_validation_blocks_command_injection(self):
         self.assertIsNotNone(validate_name('x";kill @a', set(), set()))
         self.assertIsNone(validate_name("Farm_Bot-1", set(), set()))
