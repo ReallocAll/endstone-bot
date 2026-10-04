@@ -18,10 +18,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "interval_ticks": 10,
         "distance": 1.0,
     },
-    "beta_api": {
-        "auto_enable": True,
-        "backup_keep": 5,
-    },
 }
 
 
@@ -83,14 +79,6 @@ class SettingsManager:
     def guard_distance(self) -> float:
         return max(0.0, float(self._config["position_guard"]["distance"]))
 
-    @property
-    def beta_auto_enable(self) -> bool:
-        return bool(self._config["beta_api"]["auto_enable"])
-
-    @property
-    def beta_backup_keep(self) -> int:
-        return max(1, int(self._config["beta_api"]["backup_keep"]))
-
     def reload(self) -> None:
         self._config = self._load_config()
         self._players = self._load_players()
@@ -109,11 +97,6 @@ class SettingsManager:
                 for key in ("enabled", "interval_ticks", "distance"):
                     if key in guard:
                         cfg["position_guard"][key] = guard[key]
-            beta_api = data.get("beta_api")
-            if isinstance(beta_api, dict):
-                for key in ("auto_enable", "backup_keep"):
-                    if key in beta_api:
-                        cfg["beta_api"][key] = beta_api[key]
         self._sanitize_config(cfg)
         self._write_json(self._config_path, cfg)
         return cfg
@@ -157,9 +140,6 @@ class SettingsManager:
         guard["enabled"] = bool(guard.get("enabled", True))
         guard["interval_ticks"] = max(1, min(1200, int(guard.get("interval_ticks", 10))))
         guard["distance"] = max(0.0, min(32.0, float(guard.get("distance", 1.0))))
-        beta_api = cfg["beta_api"]
-        beta_api["auto_enable"] = bool(beta_api.get("auto_enable", True))
-        beta_api["backup_keep"] = max(1, min(20, int(beta_api.get("backup_keep", 5))))
 
     def save_config(self) -> None:
         self._sanitize_config(self._config)
@@ -190,10 +170,6 @@ class SettingsManager:
             guard["interval_ticks"] = int(interval_ticks)
         if distance is not None:
             guard["distance"] = float(distance)
-        self.save_config()
-
-    def set_beta_auto_enable(self, enabled: bool) -> None:
-        self._config["beta_api"]["auto_enable"] = bool(enabled)
         self.save_config()
 
     @staticmethod
