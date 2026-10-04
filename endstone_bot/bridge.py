@@ -76,6 +76,7 @@ class BridgeManager:
             "spawn": "bot:spawn",
             "remove": "bot:remove",
             "teleport": "bot:teleport",
+            "trident": "bot:trident",
             "clear": "bot:clear",
         }.get(action)
         if event_id is None:
