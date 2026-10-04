@@ -300,16 +300,21 @@ def _create_verified_backup(
 
 
 def _prune_backups(backup_root: Path, world_name: str, keep: int) -> None:
-    keep = max(1, min(20, int(keep)))
-    safe_world = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in world_name) or "world"
-    folder = backup_root / safe_world
-    if not folder.is_dir():
+    """Best-effort retention; cleanup failure must never change patch success."""
+    try:
+        keep = max(1, min(20, int(keep)))
+        safe_world = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in world_name) or "world"
+        folder = backup_root / safe_world
+        if not folder.is_dir():
+            return
+        backups = sorted(
+            folder.glob("level.dat.*.bak"),
+            key=lambda p: p.stat().st_mtime_ns,
+            reverse=True,
+        )
+    except (OSError, ValueError, TypeError):
         return
-    backups = sorted(
-        folder.glob("level.dat.*.bak"),
-        key=lambda p: p.stat().st_mtime_ns,
-        reverse=True,
-    )
+
     for old in backups[keep:]:
         try:
             old.unlink()
