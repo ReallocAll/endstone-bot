@@ -81,6 +81,7 @@ class BotPlugin(Plugin):
         self._tick_counter = 0
         self._list_names: set[str] = set()
         self._bridge_warning_sent = False
+        self.register_events(self)
 
         pack_state = self._setup_behavior_pack()
         self._write_beta_patch_script()
