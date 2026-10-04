@@ -536,7 +536,7 @@ function doThrowTrident(req) {
             z: head.z + direction.z * 0.6,
         };
 
-        projectileEntity = sim.dimension.spawnEntity("minecraft:thrown_trident", launch);
+        projectileEntity = sim.dimension.spawnEntity("endstone_bot:thrown_trident", launch);
         const projectile = projectileEntity.getComponent("minecraft:projectile");
         if (!projectile) {
             throw new Error("minecraft:projectile component missing");
