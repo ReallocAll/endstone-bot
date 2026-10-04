@@ -187,6 +187,18 @@ function spawnWithTestApi(req) {
     return sim;
 }
 
+function isDeadSim(name, sim) {
+    if (deadPlayers.has(name)) return true;
+    try {
+        const health = sim.getComponent("minecraft:health");
+        if (health && Number(health.currentValue) <= 0) {
+            deadPlayers.add(name);
+            return true;
+        }
+    } catch (_) {}
+    return false;
+}
+
 function finishRespawn(name, sim, pose) {
     system.runTimeout(() => {
         try {
@@ -231,7 +243,7 @@ function doSpawn(req) {
     if (existing) {
         try {
             if (existing.isValid) {
-                if (deadPlayers.has(name)) {
+                if (isDeadSim(name, existing)) {
                     respawnTracked(name, existing, pose);
                     return;
                 }
@@ -323,7 +335,7 @@ function doTeleport(req) {
         reply("bot:error", { n: name, e: "SimulatedPlayer not found" });
         return;
     }
-    if (deadPlayers.has(name)) {
+    if (isDeadSim(name, sim)) {
         if (!respawnTracked(name, sim, pose)) {
             reply("bot:error", { n: name, e: "failed to respawn SimulatedPlayer" });
         }
@@ -358,7 +370,7 @@ function doThrowTrident(req) {
         reply("bot:error", { n: name, e: "SimulatedPlayer not found" });
         return;
     }
-    if (deadPlayers.has(name)) {
+    if (isDeadSim(name, sim)) {
         if (!respawnTracked(name, sim, pose)) {
             reply("bot:error", { n: name, e: "failed to respawn before trident action" });
         }
@@ -588,7 +600,11 @@ system.runInterval(() => {
     if (!bridgeToken || simulatedPlayers.size === 0) return;
     const report = [];
     for (const [name, sim] of Array.from(simulatedPlayers.entries())) {
-        if (deadPlayers.has(name)) continue;
+        if (isDeadSim(name, sim)) {
+            const pose = desiredPoses.get(name);
+            if (pose) respawnTracked(name, sim, pose);
+            continue;
+        }
         try {
             if (!sim.isValid) {
                 simulatedPlayers.delete(name);
