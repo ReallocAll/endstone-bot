@@ -41,6 +41,9 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q endstone_bot
 
+      - name: Check behavior-pack JavaScript syntax
+        run: node --check endstone_bot/behavior_pack/scripts/main.js
+
       - name: Build package
         run: python -m build
 
