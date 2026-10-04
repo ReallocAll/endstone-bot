@@ -15,7 +15,7 @@
 - 玩家可以把自己的当前位置和世界空间视线方向同步给假人；投掷三叉戟时只会扫描并使用假人背包里已经存在的 `minecraft:trident`，不会生成或补充物品，也不自动瞄准、不循环投掷。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
-- 默认在 Endstone `on_load()`、BDS 读取世界之前安全启用 Beta APIs；只从固定 BDS 根目录的 `server.properties -> level-name` 精确定位当前世界，找不到唯一目标时 fail closed，绝不扫描或猜测其他世界。
+- 默认在服务器**正常退出、BDS 最终 world save 完成之后**安全启用 Beta APIs；运行中的世界绝不直接改 `level.dat`，避免被 BDS 的内存 LevelData 覆盖。
 
 ## 默认限制
 
@@ -108,19 +108,40 @@
 
 ## Behavior Pack / Beta APIs
 
-SimulatedPlayer 依赖 Beta APIs。默认配置 `beta_api.auto_enable=true`，插件会在 Endstone `on_load()` 阶段、BDS 读取世界之前尝试安全启用：
+SimulatedPlayer 依赖 Beta APIs。默认配置 `beta_api.auto_enable=true`。
 
-- 只检查 `<cwd>/server.properties` 与 `<cwd>/bedrock_server/server.properties` 两种固定布局；
-- 世界名只读取对应 `server.properties` 的 `level-name`，绝不扫描 `worlds/` 猜测；
-- 拒绝符号链接、路径穿越、多个候选世界、NBT 长度头异常、重复字段、错误字段类型；
+BDS 会在 Endstone 插件加载前把 LevelData/实验状态读入内存，所以**运行中的服务器不能可靠地修改 `level.dat`**：即使磁盘写入成功，本轮也不会生效，停服时还可能被 BDS 的最终 world save 覆盖。
+
+本 fork 采用延迟补丁：
+
+1. 插件运行时只根据已加载的 `server.level.name` 精确记录当前世界的 `level.dat`；
+2. 运行中的世界不写 `level.dat`；
+3. 正常 `stop` 后，BDS server thread 已停止并完成最终 world save；
+4. Python 进程退出时通过 `atexit` 执行安全补丁；
+5. 下一次完整启动直接读取已经启用的 Beta APIs。
+
+`/reload` 不会触发这个补丁，因为进程没有退出。崩溃或 `kill -9` 也不会执行，宁可不改也不在不确定状态下写世界文件。
+
+安全写入仍包含：
+
+- 精确世界路径，不扫描 `worlds/` 猜测；
+- 拒绝符号链接、路径穿越、NBT 长度头异常、重复字段、错误字段类型；
 - 完整解析修改前后的 little-endian NBT，并验证除 `experiments.gametest`、`experiments_ever_used`、`saved_with_toggled_experiments` 外没有语义变化；
-- 写入前在插件数据目录 `level_dat_backups/<world>/` 创建并校验 SHA-256 备份，默认保留最近 5 份；
-- 使用同目录临时文件、`fsync` 与 `os.replace` 原子替换；写后重新解析验证，失败自动回滚；
-- 世界已经启用时不写文件，也不额外刷日志。
+- 写入前在 `level_dat_backups/<world>/` 创建并校验 SHA-256 备份，默认保留最近 5 份；
+- 同目录临时文件 + `fsync` + `os.replace` 原子替换；
+- 写后重新解析验证，失败自动回滚。
 
-可在 `config.json` 设置 `beta_api.auto_enable=false`，或使用 `/bot config betaauto false` 关闭。命令修改在下一次完整启动时生效。
+可在 `config.json` 设置 `beta_api.auto_enable=false`，或使用 `/bot config betaauto false` 关闭。
 
-Behavior Pack 仍根据已经加载的 `server.level.name` 精确寻找当前世界，自动安装/升级并更新 `world_behavior_packs.json`。首次安装或 Behavior Pack 版本升级后仍需要完整重启一次，让 BDS 在启动阶段加载新的 Pack。
+Linux/无 GUI 环境如果需要显式离线执行，也提供：
+
+```bash
+endstone-bot-enable-beta
+```
+
+必须在 BDS 已停止时运行。它使用同一套严格校验、备份、原子替换和回滚逻辑，并从 `server.properties -> level-name` 精确定位世界。
+
+Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并更新 `world_behavior_packs.json`。首次安装或 Pack 版本升级后仍需要完整重启一次。
 
 ## Bridge protocol 2
 
