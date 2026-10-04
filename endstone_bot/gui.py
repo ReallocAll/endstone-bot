@@ -1,512 +1,332 @@
-"""GUI 表单模块。
-
-参考 mcbes-manage-script 的 UI 表单设计（fake-player.ts），
-适配 Endstone Python Form API。
-
-表单层级：
-  主菜单 (ActionForm)
-    ├── 创建假人 (ModalForm: 名称+皮肤)
-    ├── 假人列表 (ActionForm: 每个假人一个按钮)
-    │     └── 假人管理 (ActionForm)
-    │           ├── 查看信息
-    │           ├── 切换皮肤 (ActionForm: 16个皮肤)
-    │           ├── 设置行为 (ModalForm: 模式+目标)
-    │           ├── 调整半径 (ModalForm: 滑块)
-    │           ├── 移动到当前位置
-    │           └── 删除假人
-    ├── 清除全部
-    └── 致谢信息
-
-使用方式：
-  - 命令 /bot gui 打开主菜单
-  - /bot 不带参数也打开主菜单
-  - 右键假人直接打开假人管理菜单
-"""
-
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from typing import Any
 
-from endstone.form import (
-    ActionForm,
-    Dropdown,
-    Label,
-    ModalForm,
-    Slider,
-    TextInput,
-    Toggle,
-)
+from endstone.form import ActionForm, Label, MessageForm, ModalForm, Slider, TextInput, Toggle
 
-from endstone_bot.models import (
-    SKINS,
-    FakePlayer,
-    get_skin_name,
-    normalize_skin_id,
-)
+from endstone_bot.models import FakePlayer
 
 
 class BotGUI:
-    """假人 GUI 管理器，封装所有表单逻辑。"""
-
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
 
-    # ==================================================================
-    # 主菜单（同月华 openFakePlayerManageForm）
-    # ==================================================================
-
-    def open_main_menu(self, player: Any) -> None:
-        """打开主菜单。"""
-        bot_count = len(self._plugin._bots)
-
+    def open_main(self, player: Any) -> None:
+        uuid = str(getattr(player, "unique_id", "") or "")
+        name = str(getattr(player, "name", "") or "")
+        owned = self._plugin.manager.bots_for_owner(uuid, name)
+        _, limits = self._plugin.settings.effective(uuid, name)
+        max_text = "不限" if limits.unlimited else str(limits.max_bots)
+        bridge = "§a正常" if self._plugin.bridge.active else "§c离线"
         form = ActionForm(
             title="§l§b假人管理",
-            content=f"§7当前共有 §a{bot_count} §7个假人\n§7请选择操作：",
+            content=(
+                f"桥接：{bridge}§r\n"
+                f"我的假人：§f{len(owned)} / §f{max_text}\n"
+                f"全服假人：§f{len(self._plugin.manager.bots)} / §f{self._plugin.settings.max_total}"
+            ),
         )
-
-        form.add_button(
-            "§a创建假人\n§7点击在此位置生成假人",
-            on_click=lambda p: self.open_create_form(p),
-        )
-
-        form.add_button(
-            f"§e假人列表 §7({bot_count})\n§7查看和管理已有假人",
-            on_click=lambda p: self.open_bot_list(p),
-        )
-
-        if self._plugin._is_admin(player):
-            form.add_button(
-                "§5AI 模型配置\n§7设置 API 地址、Key 与模型",
-                on_click=lambda p: self.open_ai_global_form(p),
-            )
-            form.add_button(
-                "§c清除全部假人\n§7删除所有假人和常加载区域",
-                on_click=lambda p: self.open_clearall_confirm(p),
-            )
-
-        form.add_button(
-            "§9致谢信息\n§7查看参考的开源项目",
-            on_click=lambda p: self.open_credits(p),
-        )
-
+        form.add_button("§a创建假人\n在当前位置创建", on_click=lambda p: self.open_create(p))
+        form.add_button(f"§e我的假人 ({len(owned)})\n查看、移动或删除", on_click=lambda p: self.open_my_bots(p))
+        if self._plugin.is_admin(player):
+            form.add_button("§c管理员面板\n全服管理、玩家限制与全局设置", on_click=lambda p: self.open_admin(p))
         player.send_form(form)
 
-    # ==================================================================
-    # 创建假人表单（同月华 openCreateFakePlayerForm）
-    # ==================================================================
-
-    def open_create_form(self, player: Any) -> None:
-        """打开创建假人表单。"""
-        skin_options = [f"#{s.id:2d} {s.name}" for s in SKINS]
-
+    def open_create(self, player: Any) -> None:
         form = ModalForm(
             title="§l§a创建假人",
             controls=[
-                TextInput(
-                    label="假人名称",
-                    placeholder="字母/数字/下划线/短横线，最长24字符",
-                ),
-                Dropdown(
-                    label="皮肤选择",
-                    options=skin_options,
-                    default_index=0,
-                ),
+                TextInput(label="假人名称", placeholder="字母/数字/_/-，最长24字符"),
+                Label(text="假人会固定在创建位置；移动后可在管理菜单重新设定位置。"),
             ],
             submit_button="创建",
         )
 
-        def on_submit(p: Any, result: str) -> None:
+        def submit(p: Any, result: str) -> None:
             if result is None:
                 return
             try:
                 data = json.loads(result)
-            except (json.JSONDecodeError, TypeError):
-                p.send_message("§c表单数据解析失败。§r")
+                name = str(data[0] or "").strip()
+            except Exception:
+                p.send_message("§c表单数据无效。")
                 return
-            if not data or len(data) < 2:
-                return
+            ok, message = self._plugin.manager.create_for_player(p, name)
+            p.send_message(("§a" if ok else "§c") + message)
+            if ok:
+                self.open_my_bots(p)
 
-            name = str(data[0]).strip() if data[0] else ""
-            skin_index = int(data[1]) if data[1] is not None else 0
-            skin_id = normalize_skin_id(skin_index)
-
-            if not name:
-                p.send_message("§c假人名称不能为空。§r")
-                return
-
-            # 调用插件的 spawn 逻辑
-            self._plugin._gui_spawn(p, name, skin_id)
-
-        form.on_submit = on_submit
+        form.on_submit = submit
         player.send_form(form)
 
-    # ==================================================================
-    # 假人列表（同月华 openFakePlayerListForm）
-    # ==================================================================
-
-    def open_bot_list(self, player: Any) -> None:
-        """打开假人列表。"""
-        bots = list(self._plugin._bots.values())
-        if not bots:
-            form = ActionForm(
-                title="§l§e假人列表",
-                content="§7当前没有假人。",
-            )
-            form.add_button("§a创建假人", on_click=lambda p: self.open_create_form(p))
-            form.add_button("§7返回主菜单", on_click=lambda p: self.open_main_menu(p))
-            player.send_form(form)
-            return
-
+    def open_my_bots(self, player: Any) -> None:
+        uuid = str(getattr(player, "unique_id", "") or "")
+        name = str(getattr(player, "name", "") or "")
+        bots = self._plugin.manager.bots_for_owner(uuid, name)
         form = ActionForm(
-            title="§l§e假人列表",
-            content=f"§7共 §a{len(bots)} §7个假人，点击进行管理：",
+            title="§l§e我的假人",
+            content="点击假人进行管理。" if bots else "你还没有假人。",
         )
-
         for fp in bots:
-            alive = "§a在线" if self._plugin._is_actor_valid(fp.actor) else "§c离线"
-            skin_name = get_skin_name(fp.skin_id)
-            can_manage = self._plugin._can_manage(player, fp)
-            manage_tag = "" if can_manage else " §7(无权)"
+            status = self._plugin.manager.status_text(fp)
             form.add_button(
-                f"§b{fp.name}\n§7{fp.owner_name} | {alive} | {skin_name}#{fp.skin_id}{manage_tag}",
-                on_click=(lambda f=fp: lambda p: self.open_bot_manage(p, f))(),
+                f"§b{fp.name}\n{status} | {fp.dimension} | {fp.location_x:.1f}, {fp.location_y:.1f}, {fp.location_z:.1f}",
+                on_click=(lambda bot=fp: lambda p: self.open_bot(p, bot, False))(),
             )
-
-        form.add_button("§7返回主菜单", on_click=lambda p: self.open_main_menu(p))
+        form.add_button("§a创建假人", on_click=lambda p: self.open_create(p))
+        form.add_button("返回", on_click=lambda p: self.open_main(p))
         player.send_form(form)
 
-    # ==================================================================
-    # 假人管理菜单（同月华 openFakePlayerManageForm）
-    # ==================================================================
-
-    def open_bot_manage(self, player: Any, fp: FakePlayer) -> None:
-        """打开假人管理菜单。"""
-        alive = "§a在线" if self._plugin._is_actor_valid(fp.actor) else "§c离线(等待自愈)"
-        skin_name = get_skin_name(fp.skin_id)
-        behavior = fp.behavior
-
-        content = (
-            f"§b名称：§f{fp.name}\n"
-            f"§b所有者：§f{fp.owner_name}\n"
-            f"§b状态：§f{alive}\n"
-            f"§b位置：§f({fp.location_x:.1f}, {fp.location_y:.1f}, {fp.location_z:.1f})\n"
-            f"§b维度：§f{fp.dimension}\n"
-            f"§b皮肤：§f{skin_name}(#{fp.skin_id})\n"
-            f"§b行为：§f移动={behavior.movement} 动作={behavior.action}\n"
-            f"§b创建：§f{fp.created}"
-        )
-
+    def open_bot(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+        current = self._plugin.manager.get_by_name(fp.name)
+        if current is None:
+            player.send_message("§c这个假人已经不存在。")
+            return
+        fp = current
+        can_manage = self._plugin.manager.can_manage(player, fp)
         form = ActionForm(
             title=f"§l§b{fp.name}",
-            content=content,
-        )
-
-        can_manage = self._plugin._can_manage(player, fp)
-
-        # 所有人都可以查看的操作
-        form.add_button(
-            "§d切换皮肤\n§7选择 0-15 号皮肤变体",
-            on_click=lambda p: self.open_skin_select(p, fp) if can_manage else self._deny(p),
-        )
-
-        form.add_button(
-            "§6设置行为\n§7idle / station / follow",
-            on_click=lambda p: self.open_behavior_form(p, fp) if can_manage else self._deny(p),
-        )
-
-        form.add_button(
-            "§e调整半径\n§7设置常加载区域大小 0-4",
-            on_click=lambda p: self.open_radius_form(p, fp) if can_manage else self._deny(p),
-        )
-
-        form.add_button(
-            "§5AI 设置\n§7开关 AI 与管理授权成员",
-            on_click=lambda p: self.open_ai_bot_form(p, fp) if can_manage else self._deny(p),
-        )
-
-        form.add_button(
-            "§b移动到当前位置\n§7将假人传送到你身边",
-            on_click=lambda p: self._do_movehere(p, fp) if can_manage else self._deny(p),
-        )
-
-        form.add_button(
-            "§c删除假人\n§7移除假人及常加载区域",
-            on_click=lambda p: self.open_remove_confirm(p, fp) if can_manage else self._deny(p),
-        )
-
-        form.add_button("§7返回列表", on_click=lambda p: self.open_bot_list(p))
-        player.send_form(form)
-
-    # ==================================================================
-    # 皮肤选择（同月华 openLegacyFakePlayerSkinForm）
-    # ==================================================================
-
-    def open_skin_select(self, player: Any, fp: FakePlayer) -> None:
-        """打开皮肤选择菜单。"""
-        form = ActionForm(
-            title=f"§l§d{fp.name} - 皮肤选择",
-            content=f"§7当前皮肤：§b{get_skin_name(fp.skin_id)}(#{fp.skin_id})",
-        )
-
-        for skin in SKINS:
-            current = " §a←" if skin.id == fp.skin_id else ""
-            form.add_button(
-                f"#{skin.id:2d} {skin.name}{current}",
-                on_click=(lambda s=skin: lambda p: self._do_set_skin(p, fp, s.id))(),
-            )
-
-        form.add_button("§7返回管理", on_click=lambda p: self.open_bot_manage(p, fp))
-        player.send_form(form)
-
-    # ==================================================================
-    # 行为设置（同月华 openFakePlayerBehaviorForm）
-    # ==================================================================
-
-    def open_behavior_form(self, player: Any, fp: FakePlayer) -> None:
-        """打开行为设置表单。"""
-        behavior = fp.behavior
-        movement_options = ["idle - 原地待命（位置守护）", "station - 锁定当前位置", "follow - 跟随玩家"]
-        current_index = {"idle": 0, "station": 1, "follow": 2}.get(behavior.movement, 0)
-
-        controls = [
-            Dropdown(
-                label="移动模式",
-                options=movement_options,
-                default_index=current_index,
+            content=(
+                f"所有者：§f{fp.owner_name}\n"
+                f"状态：§f{self._plugin.manager.status_text(fp)}\n"
+                f"位置：§f{fp.dimension} ({fp.location_x:.1f}, {fp.location_y:.1f}, {fp.location_z:.1f})\n"
+                f"创建：§f{fp.created}"
             ),
-            TextInput(
-                label="跟随目标玩家名（仅 follow 模式需要）",
-                placeholder="输入在线玩家名",
-                default_value=behavior.target_player if behavior.movement == "follow" else "",
-            ),
-        ]
-
-        form = ModalForm(
-            title=f"§l§6{fp.name} - 行为设置",
-            controls=controls,
-            submit_button="应用",
         )
-
-        def on_submit(p: Any, result: str) -> None:
-            if result is None:
-                return
-            try:
-                data = json.loads(result)
-            except (json.JSONDecodeError, TypeError):
-                return
-            if not data or len(data) < 2:
-                return
-
-            mode_index = int(data[0]) if data[0] is not None else 0
-            target = str(data[1]).strip() if data[1] else ""
-
-            modes = ["idle", "station", "follow"]
-            mode = modes[mode_index] if 0 <= mode_index < len(modes) else "idle"
-
-            self._plugin._gui_set_behavior(p, fp, mode, target)
-
-        form.on_submit = on_submit
+        if can_manage:
+            form.add_button("§b移动到我这里\n同步当前位置和视角", on_click=lambda p: self._move_here(p, fp, admin_context))
+            form.add_button("§6投掷三叉戟\n按已保存的位置和视角投掷", on_click=lambda p: self._throw_trident(p, fp, admin_context))
+            form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
+        form.add_button(
+            "返回",
+            on_click=(lambda p: self.open_admin_bots(p)) if admin_context else (lambda p: self.open_my_bots(p)),
+        )
         player.send_form(form)
 
-    # ==================================================================
-    # 半径调整（同月华 radius 设置）
-    # ==================================================================
+    def _move_here(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+        ok, message = self._plugin.manager.move_here(player, fp)
+        player.send_message(("§a" if ok else "§c") + message)
+        self.open_bot(player, fp, admin_context)
 
-    def open_radius_form(self, player: Any, fp: FakePlayer) -> None:
-        """打开半径调整表单。"""
-        form = ModalForm(
-            title=f"§l§e{fp.name} - 常加载半径",
-            controls=[
-                Slider(
-                    label="区块半径（0=不加载，4=最大）",
-                    min=0,
-                    max=4,
-                    step=1,
-                    default_value=float(fp.last_area_key[3] if fp.last_area_key else 4),
-                ),
-            ],
-            submit_button="应用",
-        )
+    def _throw_trident(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+        ok, message = self._plugin.manager.throw_trident_here(player, fp)
+        player.send_message(("§a" if ok else "§c") + message)
+        self.open_bot(player, fp, admin_context)
 
-        def on_submit(p: Any, result: str) -> None:
-            if result is None:
-                return
-            try:
-                data = json.loads(result)
-            except (json.JSONDecodeError, TypeError):
-                return
-            if not data:
-                return
-            radius = int(float(data[0])) if data[0] is not None else 4
-            self._plugin._gui_set_radius(p, fp, radius)
-
-        form.on_submit = on_submit
-        player.send_form(form)
-
-    # ==================================================================
-    # AI 设置
-    # ==================================================================
-
-    def open_ai_bot_form(self, player: Any, fp: FakePlayer) -> None:
-        """管理单个假人的 AI 开关和成员白名单。"""
-        form = ModalForm(
-            title=f"§l§5{fp.name} - AI 设置",
-            controls=[
-                Toggle(label="启用 AI 对话", default_value=bool(fp.ai_enabled)),
-                TextInput(
-                    label="授权玩家（英文逗号分隔）",
-                    placeholder="PlayerA,PlayerB",
-                    default_value=",".join(fp.ai_members),
-                ),
-                Label(text=f"唤醒方式：@{fp.name} <指令>"),
-            ],
-            submit_button="保存",
-        )
-
-        def on_submit(p: Any, result: str) -> None:
-            if result is None:
-                return
-            try:
-                data = json.loads(result)
-            except (json.JSONDecodeError, TypeError):
-                p.send_message("§c表单数据解析失败。")
-                return
-            enabled = bool(data[0]) if data else False
-            members = []
-            if len(data) > 1 and data[1]:
-                for value in str(data[1]).split(","):
-                    name = value.strip()
-                    if name and name.lower() not in {x.lower() for x in members}:
-                        members.append(name)
-            fp.ai_enabled = enabled
-            fp.ai_members = members
-            self._plugin._save_db()
-            p.send_message(f"§a{fp.name} AI 设置已保存。")
-
-        form.on_submit = on_submit
-        player.send_form(form)
-
-    def open_ai_global_form(self, player: Any) -> None:
-        """管理员配置 OpenAI 兼容 API。"""
-        cfg = self._plugin._ai_config
-        form = ModalForm(
-            title="§l§5AI 模型配置",
-            controls=[
-                TextInput(label="API 地址", placeholder="https://api.openai.com/v1", default_value=cfg.get("baseUrl", "")),
-                TextInput(label="API Key（留空则保留原 Key）", placeholder="sk-...", default_value=""),
-                TextInput(label="模型名称", placeholder="gpt-4o-mini", default_value=cfg.get("model", "")),
-            ],
-            submit_button="保存",
-        )
-
-        def on_submit(p: Any, result: str) -> None:
-            if result is None:
-                return
-            try:
-                data = json.loads(result)
-            except (json.JSONDecodeError, TypeError):
-                p.send_message("§c表单数据解析失败。")
-                return
-            base_url = str(data[0] or "").strip()
-            api_key = str(data[1] or "").strip() if len(data) > 1 else ""
-            model = str(data[2] or "").strip() if len(data) > 2 else ""
-            self._plugin._update_ai_config(
-                base_url=base_url,
-                api_key=api_key or None,
-                model=model,
-            )
-            p.send_message("§aAI 模型配置已保存。可执行 /bot ai-config test 测试连接。")
-
-        form.on_submit = on_submit
-        player.send_form(form)
-
-    # ==================================================================
-    # 删除确认（同月华 delete 确认）
-    # ==================================================================
-
-    def open_remove_confirm(self, player: Any, fp: FakePlayer) -> None:
-        """打开删除确认。"""
-        from endstone.form import MessageForm
-
+    def _confirm_remove(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
         form = MessageForm(
             title=f"§l§c删除 {fp.name}",
-            content=(
-                f"§c确定要删除假人 §b{fp.name} §c吗？\n\n"
-                f"§7所有者：{fp.owner_name}\n"
-                f"§7位置：({fp.location_x:.1f}, {fp.location_y:.1f}, {fp.location_z:.1f})\n"
-                f"§7此操作不可撤销！"
-            ),
+            content=f"确定删除 §b{fp.name}§r 吗？该操作会同时断开对应 SimulatedPlayer。",
             button1="§c确认删除",
-            button2="§7取消",
+            button2="取消",
         )
 
-        def on_submit(p: Any, button: int) -> None:
+        def submit(p: Any, button: int) -> None:
             if button == 0:
-                self._plugin._gui_remove(p, fp)
+                ok, message = self._plugin.manager.remove(p, fp)
+                p.send_message(("§a" if ok else "§c") + message)
+                if admin_context:
+                    self.open_admin_bots(p)
+                else:
+                    self.open_my_bots(p)
+            else:
+                self.open_bot(p, fp, admin_context)
 
-        form.on_submit = on_submit
+        form.on_submit = submit
         player.send_form(form)
 
-    # ==================================================================
-    # 清除全部确认
-    # ==================================================================
-
-    def open_clearall_confirm(self, player: Any) -> None:
-        """打开清除全部确认。"""
-        from endstone.form import MessageForm
-
-        count = len(self._plugin._bots)
-        form = MessageForm(
-            title="§l§c清除全部假人",
-            content=(
-                f"§c确定要清除全部 §e{count} §c个假人吗？\n\n"
-                f"§7这将删除所有假人实体和常加载区域。\n"
-                f"§7此操作不可撤销！"
-            ),
-            button1="§c确认清除",
-            button2="§7取消",
-        )
-
-        def on_submit(p: Any, button: int) -> None:
-            if button == 0:
-                self._plugin._gui_clearall(p)
-
-        form.on_submit = on_submit
-        player.send_form(form)
-
-    # ==================================================================
-    # 致谢信息
-    # ==================================================================
-
-    def open_credits(self, player: Any) -> None:
-        """打开致谢信息。"""
+    def open_admin(self, player: Any) -> None:
+        if not self._plugin.is_admin(player):
+            player.send_message("§c只有管理员可以打开该面板。")
+            return
+        bridge = "§a正常" if self._plugin.bridge.active else "§c离线"
         form = ActionForm(
-            title="§l§9致谢与参考",
+            title="§l§c假人管理员",
             content=(
-                "§b===== endstone_bot 致谢 =====§r\n\n"
-                "§a1. mcbes-manage-script§r\n"
-                "   §9https://github.com/YueHua46/mcbes-manage-script§r\n"
-                "   许可证：PolyForm Noncommercial License 1.0.0\n"
-                "   借鉴：全部假人管理逻辑\n\n"
-                "§a2. endstone_bot (原版 0.2.5)§r\n"
-                "   借鉴：NPC 实体生成、tickingarea\n\n"
-                "§7本项目在上述思路基础上重新实现，\n"
-                "适配 Endstone Python API。感谢原作者。§r"
+                f"桥接：{bridge}§r\n"
+                f"全服假人：§f{len(self._plugin.manager.bots)} / §f{self._plugin.settings.max_total}\n"
+                f"普通玩家默认上限：§f{self._plugin.settings.max_per_player}"
             ),
         )
-        form.add_button("§7返回主菜单", on_click=lambda p: self.open_main_menu(p))
+        form.add_button("§e全服假人\n查看和管理全部假人", on_click=lambda p: self.open_admin_bots(p))
+        form.add_button("§6玩家限制\n为普通玩家调整或解除限制", on_click=lambda p: self.open_limit_players(p))
+        form.add_button("§5全局设置\n调整默认数量和创建冷却", on_click=lambda p: self.open_global_settings(p))
+        form.add_button("返回", on_click=lambda p: self.open_main(p))
         player.send_form(form)
 
-    # ==================================================================
-    # 操作执行（委托给插件）
-    # ==================================================================
+    def open_admin_bots(self, player: Any) -> None:
+        if not self._plugin.is_admin(player):
+            return
+        bots = sorted(self._plugin.manager.bots.values(), key=lambda x: (x.owner_name.lower(), x.name.lower()))
+        form = ActionForm(title="§l§e全服假人", content=f"共 {len(bots)} 个假人。")
+        for fp in bots:
+            form.add_button(
+                f"§b{fp.name}\n{fp.owner_name} | {self._plugin.manager.status_text(fp)}",
+                on_click=(lambda bot=fp: lambda p: self.open_bot(p, bot, True))(),
+            )
+        form.add_button("返回管理员面板", on_click=lambda p: self.open_admin(p))
+        player.send_form(form)
 
-    def _deny(self, player: Any) -> None:
-        player.send_message("§c你没有权限管理该假人。§r")
+    def open_limit_players(self, player: Any) -> None:
+        if not self._plugin.is_admin(player):
+            return
+        form = ActionForm(
+            title="§l§6玩家限制",
+            content="在线玩家优先显示；也可以按名称管理离线玩家。",
+        )
+        online = sorted(list(self._plugin.server.online_players), key=lambda p: str(p.name).lower())
+        for target in online:
+            target_name = str(target.name)
+            key = self._plugin.settings.remember_player(str(getattr(target, "unique_id", "") or ""), target_name)
+            limits = self._plugin.settings.effective_for_key(key)
+            max_text = "不限" if limits.unlimited else str(limits.max_bots)
+            form.add_button(
+                f"§b{target_name}\n上限 {max_text} | 冷却 {limits.cooldown_seconds}s" + (" | 绕过全服" if limits.bypass_global_limit else ""),
+                on_click=(lambda k=key, n=target_name: lambda p: self.open_limit_menu(p, k, n))(),
+            )
+        form.add_button("§e按玩家名设置\n可管理离线玩家", on_click=lambda p: self.open_limit_name_input(p))
+        overrides = self._plugin.settings.configured_overrides()
+        if overrides:
+            form.add_button(f"§d已配置例外 ({len(overrides)})", on_click=lambda p: self.open_override_list(p))
+        form.add_button("返回管理员面板", on_click=lambda p: self.open_admin(p))
+        player.send_form(form)
 
-    def _do_set_skin(self, player: Any, fp: FakePlayer, skin_id: int) -> None:
-        self._plugin._gui_set_skin(player, fp, skin_id)
+    def open_limit_name_input(self, player: Any) -> None:
+        form = ModalForm(
+            title="§l§6按名称管理限制",
+            controls=[TextInput(label="玩家名", placeholder="输入玩家名")],
+            submit_button="继续",
+        )
 
-    def _do_movehere(self, player: Any, fp: FakePlayer) -> None:
-        self._plugin._gui_movehere(player, fp)
+        def submit(p: Any, result: str) -> None:
+            try:
+                data = json.loads(result)
+                name = str(data[0] or "").strip()
+            except Exception:
+                name = ""
+            if not name:
+                p.send_message("§c玩家名不能为空。")
+                return
+            key, canonical = self._plugin.settings.resolve_target_key(name, self._plugin.server.online_players)
+            self.open_limit_menu(p, key, canonical)
+
+        form.on_submit = submit
+        player.send_form(form)
+
+    def open_override_list(self, player: Any) -> None:
+        form = ActionForm(title="§l§d已配置例外", content="仅显示非默认玩家限制。")
+        for key, rec in self._plugin.settings.configured_overrides():
+            name = str(rec.get("name", "") or key)
+            limits = self._plugin.settings.effective_for_key(key)
+            max_text = "不限" if limits.unlimited else str(limits.max_bots)
+            form.add_button(
+                f"§b{name}\n上限 {max_text} | 冷却 {limits.cooldown_seconds}s" + (" | 绕过全服" if limits.bypass_global_limit else ""),
+                on_click=(lambda k=key, n=name: lambda p: self.open_limit_menu(p, k, n))(),
+            )
+        form.add_button("返回", on_click=lambda p: self.open_limit_players(p))
+        player.send_form(form)
+
+    def open_limit_menu(self, player: Any, key: str, name: str) -> None:
+        limits = self._plugin.settings.effective_for_key(key)
+        max_text = "不限" if limits.unlimited else str(limits.max_bots)
+        form = ActionForm(
+            title=f"§l§6{name}",
+            content=(
+                f"有效假人上限：§f{max_text}\n"
+                f"创建冷却：§f{limits.cooldown_seconds}s\n"
+                f"绕过全服上限：§f{'是' if limits.bypass_global_limit else '否'}"
+            ),
+        )
+        form.add_button("§e编辑限制", on_click=lambda p: self.open_limit_edit(p, key, name))
+        form.add_button("§a解除全部限制\n不限数量、无冷却、绕过全服上限", on_click=lambda p: self._set_unlimited(p, key, name))
+        form.add_button("恢复全局默认", on_click=lambda p: self._reset_limits(p, key, name))
+        form.add_button("返回", on_click=lambda p: self.open_limit_players(p))
+        player.send_form(form)
+
+    def open_limit_edit(self, player: Any, key: str, name: str) -> None:
+        rec = self._plugin.settings.override(key)
+        effective = self._plugin.settings.effective_for_key(key)
+        unlimited = rec.get("max_bots") == -1
+        no_cooldown = rec.get("cooldown_seconds") == 0
+        max_default = effective.max_bots if effective.max_bots >= 0 else self._plugin.settings.max_per_player
+        cooldown_default = effective.cooldown_seconds
+        form = ModalForm(
+            title=f"§l§6{name} - 限制",
+            controls=[
+                Toggle(label="解除假人数量限制", default_value=unlimited),
+                Slider(label="假人上限（未解除时）", min=0, max=32, step=1, default_value=float(max(0, min(32, max_default)))),
+                Toggle(label="取消创建冷却", default_value=no_cooldown),
+                Slider(label="创建冷却（秒）", min=0, max=60, step=1, default_value=float(max(0, min(60, cooldown_default)))),
+                Toggle(label="绕过全服假人数量上限", default_value=effective.bypass_global_limit),
+            ],
+            submit_button="保存",
+        )
+
+        def submit(p: Any, result: str) -> None:
+            try:
+                data = json.loads(result)
+                is_unlimited = bool(data[0])
+                max_bots = int(float(data[1]))
+                is_no_cd = bool(data[2])
+                cooldown = int(float(data[3]))
+                bypass = bool(data[4])
+            except Exception:
+                p.send_message("§c表单数据无效。")
+                return
+            self._plugin.settings.set_override(
+                key,
+                name=name,
+                max_bots=-1 if is_unlimited else max_bots,
+                cooldown_seconds=0 if is_no_cd else cooldown,
+                bypass_global_limit=bypass,
+            )
+            p.send_message(f"§a已更新 {name} 的假人限制。")
+            self.open_limit_menu(p, key, name)
+
+        form.on_submit = submit
+        player.send_form(form)
+
+    def _set_unlimited(self, player: Any, key: str, name: str) -> None:
+        self._plugin.settings.set_unlimited(key, name)
+        player.send_message(f"§a已解除 {name} 的全部假人限制。")
+        self.open_limit_menu(player, key, name)
+
+    def _reset_limits(self, player: Any, key: str, name: str) -> None:
+        self._plugin.settings.reset_override(key, name)
+        player.send_message(f"§a{name} 已恢复全局默认限制。")
+        self.open_limit_menu(player, key, name)
+
+    def open_global_settings(self, player: Any) -> None:
+        form = ModalForm(
+            title="§l§5全局假人设置",
+            controls=[
+                Slider(label="全服假人总上限", min=1, max=128, step=1, default_value=float(min(128, self._plugin.settings.max_total))),
+                Slider(label="普通玩家默认上限", min=0, max=64, step=1, default_value=float(min(64, self._plugin.settings.max_per_player))),
+                Slider(label="默认创建冷却（秒）", min=0, max=3600, step=1, default_value=float(min(3600, self._plugin.settings.spawn_cooldown_seconds))),
+                Toggle(label="启用挂机位置守护", default_value=self._plugin.settings.guard_enabled),
+                Slider(label="位置守护距离（方块）", min=0.5, max=8.0, step=0.5, default_value=float(max(0.5, min(8.0, self._plugin.settings.guard_distance)))),
+            ],
+            submit_button="保存",
+        )
+
+        def submit(p: Any, result: str) -> None:
+            try:
+                data = json.loads(result)
+                total = int(float(data[0]))
+                per = int(float(data[1]))
+                cooldown = int(float(data[2]))
+                guard = bool(data[3])
+                distance = float(data[4])
+            except Exception:
+                p.send_message("§c表单数据无效。")
+                return
+            self._plugin.settings.set_global("maxtotal", total)
+            self._plugin.settings.set_global("maxperplayer", per)
+            self._plugin.settings.set_global("cooldown", cooldown)
+            self._plugin.settings.set_guard(enabled=guard, distance=distance)
+            p.send_message("§a全局假人设置已保存并立即生效。")
+            self.open_admin(p)
+
+        form.on_submit = submit
+        player.send_form(form)

@@ -1,119 +1,144 @@
-"""行为包通信模块（scriptevent 双向通道 + 心跳活性判定）。"""
-
 from __future__ import annotations
 
 import json
+import secrets
 import time
 from typing import Any
 
 from endstone.event import ScriptMessageEvent
 
+BRIDGE_PROTOCOL = 2
+
 
 class BridgeManager:
-    """管理插件与行为包的 scriptevent 通信。
-
-    行为包 → 插件：on_script_message 接收 bot:pong / bot:positions / bot:spawned 等
-    插件 → 行为包：send() 发送 bot:spawn / bot:remove / bot:teleport 等
-    """
+    """Authenticated scriptevent bridge to the bundled behavior pack."""
 
     def __init__(self, logger: Any, dispatch_fn: Any) -> None:
         self._logger = logger
         self._dispatch = dispatch_fn
-        self._bridge_token = ""
-        self._last_pong_at: float = -999.0
-        self._behavior_pack_active: bool = False
+        self._token = secrets.token_hex(16)
+        self._last_seen_at = -999.0
+        self._ready = False
+        self._remote_protocol: int | None = None
 
     @property
     def active(self) -> bool:
-        return self._behavior_pack_active
+        return self._ready and self._last_seen_at > 0 and time.monotonic() - self._last_seen_at < 15.0
 
     @property
-    def last_pong_at(self) -> float:
-        return self._last_pong_at
+    def protocol(self) -> int:
+        return BRIDGE_PROTOCOL
 
-    def generate_token(self) -> None:
-        import secrets
-        self._bridge_token = secrets.token_hex(16)
+    @property
+    def remote_protocol(self) -> int | None:
+        return self._remote_protocol
 
-    def send(self, event_id: str, data: dict) -> bool:
-        """发送 scriptevent 到行为包。"""
-        payload = {**data, "t": self._bridge_token}
+    def reset(self) -> None:
+        self._ready = False
+        self._last_seen_at = -999.0
+        self._remote_protocol = None
+        self._token = secrets.token_hex(16)
+
+    def _send_raw(self, event_id: str, data: dict[str, Any]) -> bool:
+        payload = {**data, "t": self._token, "p": BRIDGE_PROTOCOL}
         msg = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        command = f"scriptevent {event_id} {msg}"
         try:
-            return bool(self._dispatch(command))
+            return bool(self._dispatch(f"scriptevent {event_id} {msg}"))
         except Exception as exc:
             self._logger.debug(f"发送 scriptevent 失败: {exc}")
             return False
 
-    def send_bridge(self, msg_type: str, data: dict) -> bool:
-        """通用命令发送入口。"""
-        script_map = {
-            "spawn": "bot:spawn", "remove": "bot:remove", "teleport": "bot:teleport",
-            "practice_config": "bot:practice_config",
-        }
-        if msg_type in script_map:
-            return self.send(script_map[msg_type], data)
-        return False
+    def hello(self) -> bool:
+        return self._send_raw("bot:hello", {})
 
-    def handle_script_message(self, event: ScriptMessageEvent) -> dict | None:
-        """处理行为包发回的 scriptevent。返回解析后的消息字典，或 None。"""
-        msg_id = event.message_id
-        if not msg_id.startswith("bot:"):
+    def ping(self) -> bool:
+        if not self.active:
+            return self.hello()
+        return self._send_raw("bot:ping", {})
+
+    def request_list(self) -> bool:
+        if not self.active:
+            return False
+        return self._send_raw("bot:list", {})
+
+    def shutdown(self) -> bool:
+        """Gracefully clear remote bots and release the session token for /reload."""
+        if not self._ready:
+            return False
+        ok = self._send_raw("bot:shutdown", {})
+        self._ready = False
+        return ok
+
+    def send_bridge(self, action: str, data: dict[str, Any]) -> bool:
+        if not self.active:
+            return False
+        event_id = {
+            "spawn": "bot:spawn",
+            "remove": "bot:remove",
+            "teleport": "bot:teleport",
+            "trident": "bot:trident",
+            "clear": "bot:clear",
+        }.get(action)
+        if event_id is None:
+            return False
+        return self._send_raw(event_id, data)
+
+    def _accept_message(self, msg_id: str, data: Any) -> dict[str, Any] | None:
+        if not msg_id.startswith("bot:") or not isinstance(data, dict):
             return None
+        if data.get("t") != self._token:
+            self._logger.debug(f"忽略未经认证的 bridge message: {msg_id}")
+            return None
+
+        try:
+            remote_protocol = int(data.get("p", BRIDGE_PROTOCOL))
+        except (TypeError, ValueError):
+            remote_protocol = -1
+
+        if msg_id == "bot:hello_ack":
+            self._remote_protocol = remote_protocol
+            if remote_protocol != BRIDGE_PROTOCOL:
+                self._ready = False
+                self._logger.error(
+                    f"行为包协议不兼容: plugin={BRIDGE_PROTOCOL}, pack={remote_protocol}"
+                )
+                return None
+            first_ready = not self._ready
+            self._ready = True
+            self._last_seen_at = time.monotonic()
+            if first_ready:
+                self._logger.info("行为包桥接已认证，SimulatedPlayer 功能可用。")
+            return {"id": msg_id, "data": data}
+
+        if remote_protocol != BRIDGE_PROTOCOL or not self._ready:
+            return None
+        self._last_seen_at = time.monotonic()
+        return {"id": msg_id, "data": data}
+
+    def handle_script_message(self, event: ScriptMessageEvent) -> dict[str, Any] | None:
+        msg_id = str(event.message_id or "")
         try:
             data = json.loads(event.message) if event.message else {}
         except Exception:
-            data = {}
-        token = data.get("t", "")
-        if msg_id not in ("bot:pong", "bot:heartbeat"):
-            if not self._bridge_token or token != self._bridge_token:
-                self._logger.debug(f"忽略未经认证的 scriptevent: {msg_id}")
-                return None
-        else:
-            if not self._bridge_token or token != self._bridge_token:
-                self._logger.debug(f"忽略未经认证的 {msg_id}")
-                return None
-        return {"id": msg_id, "data": data}
+            return None
+        return self._accept_message(msg_id, data)
 
-    def on_pong(self, data: dict) -> dict | None:
-        """处理 pong 心跳。返回 managed_names 列表。"""
-        self._last_pong_at = time.monotonic()
-        was_active = self._behavior_pack_active
-        self._behavior_pack_active = True
-        if not was_active:
-            self._logger.info("§a行为包已连接，SimulatedPlayer 功能可用。§r")
-        return {
-            "names": [
-                str(n).lower() for n in data.get("names", []) if isinstance(n, str)
-            ]
-        }
+    def handle_command_callback(self, event_name: str, encoded_payload: str) -> dict[str, Any] | None:
+        event_name = str(event_name or "").strip()
+        if not event_name:
+            return None
+        msg_id = event_name if event_name.startswith("bot:") else f"bot:{event_name}"
+        try:
+            raw = bytes.fromhex(str(encoded_payload or "")).decode("utf-8")
+            data = json.loads(raw)
+        except Exception:
+            self._logger.debug(f"忽略无法解析的 botbridge 回包: {event_name}")
+            return None
+        return self._accept_message(msg_id, data)
 
-    def on_positions(self, data: dict) -> list[dict]:
-        """处理位置上报。"""
-        entries = data.get("p", [])
-        if not isinstance(entries, list):
-            return []
-        result = []
-        for item in entries:
-            if not isinstance(item, dict):
-                continue
-            result.append({
-                "n": str(item.get("n", "")),
-                "x": item.get("x"),
-                "y": item.get("y"),
-                "z": item.get("z"),
-                "d": str(item.get("d", "overworld")),
-            })
-        return result
-
-    def on_remove(self, data: dict) -> str:
-        return str(data.get("n", ""))
-
-    def on_error(self, data: dict) -> tuple[str, str]:
-        return str(data.get("n", "")), str(data.get("e", ""))
-
-    def check_activity(self, threshold: float = 20.0) -> bool:
-        if self._last_pong_at < 0:
-            return False
-        return time.monotonic() - self._last_pong_at < threshold
+    def mark_stale_if_needed(self) -> bool:
+        if self._ready and not self.active:
+            self._ready = False
+            self._logger.warning("行为包桥接已超时，进入断开状态。")
+            return True
+        return False

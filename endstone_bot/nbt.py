@@ -1,23 +1,15 @@
-"""Bedrock Edition NBT 二进制补丁模块。
+"""Strict little-endian Bedrock NBT helpers used for level.dat validation.
 
-采用二进制补丁方式修改 level.dat，只修改需要变更的字节，
-不重新序列化整个 NBT 树，确保不破坏任何其他数据。
-
-支持 Bedrock 小端 NBT 格式（用于 level.dat 和 .mcstructure）。
-- level.dat: 8 字节头（version uint32_le + length uint32_le）+ NBT 数据
-- .mcstructure: 纯 NBT 数据，无头
-
-参考:
-  - https://wiki.bedrock.dev/nbt/enabling-experiments
-  - Bedrock NBT 使用小端字节序
+The writer never serializes a complete NBT tree.  These helpers only parse and
+locate fields so level_dat.py can apply a minimal binary patch.
 """
 
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
 from typing import Any
 
-# NBT 标签类型
 TAG_END = 0
 TAG_BYTE = 1
 TAG_SHORT = 2
@@ -32,285 +24,253 @@ TAG_COMPOUND = 10
 TAG_INT_ARRAY = 11
 TAG_LONG_ARRAY = 12
 
-# DoS 防护：限制递归深度和列表长度
-MAX_NBT_DEPTH = 512
-MAX_LIST_LENGTH = 1_000_000
+MAX_NBT_DEPTH = 256
+MAX_COLLECTION_LENGTH = 1_000_000
+
+
+@dataclass(frozen=True)
+class FieldInfo:
+    tag_type: int
+    payload_offset: int
 
 
 class NBTReader:
-    """小端 NBT 读取器，支持跳过 payload 和记录偏移量。"""
+    def __init__(self, data: bytes, offset: int = 0, depth: int = 0) -> None:
+        self.data = data
+        self.pos = offset
+        self.depth = depth
 
-    def __init__(self, data: bytes, base_offset: int = 0, depth: int = 0) -> None:
-        self._data = data
-        self._pos = base_offset
-        self._depth = depth
-
-    @property
-    def position(self) -> int:
-        return self._pos
-
-    def _read(self, n: int) -> bytes:
-        result = self._data[self._pos : self._pos + n]
-        if len(result) < n:
+    def read(self, size: int) -> bytes:
+        if size < 0 or self.pos + size > len(self.data):
             raise EOFError("NBT 数据意外结束")
-        self._pos += n
-        return result
+        value = self.data[self.pos:self.pos + size]
+        self.pos += size
+        return value
 
-    def _read_ubyte(self) -> int:
-        return struct.unpack("<B", self._read(1))[0]
+    def u8(self) -> int:
+        return struct.unpack("<B", self.read(1))[0]
 
-    def _read_ushort(self) -> int:
-        return struct.unpack("<H", self._read(2))[0]
+    def i8(self) -> int:
+        return struct.unpack("<b", self.read(1))[0]
 
-    def _read_int(self) -> int:
-        return struct.unpack("<i", self._read(4))[0]
+    def u16(self) -> int:
+        return struct.unpack("<H", self.read(2))[0]
 
-    def _read_string(self) -> str:
-        length = self._read_ushort()
-        return self._read(length).decode("utf-8", errors="replace")
+    def i16(self) -> int:
+        return struct.unpack("<h", self.read(2))[0]
+
+    def i32(self) -> int:
+        return struct.unpack("<i", self.read(4))[0]
+
+    def i64(self) -> int:
+        return struct.unpack("<q", self.read(8))[0]
+
+    def f32(self) -> float:
+        return struct.unpack("<f", self.read(4))[0]
+
+    def f64(self) -> float:
+        return struct.unpack("<d", self.read(8))[0]
+
+    def string(self) -> str:
+        length = self.u16()
+        return self.read(length).decode("utf-8")
+
+    def _enter(self) -> None:
+        self.depth += 1
+        if self.depth > MAX_NBT_DEPTH:
+            raise ValueError(f"NBT 递归深度超限: {self.depth}")
+
+    def _leave(self) -> None:
+        self.depth -= 1
+
+    @staticmethod
+    def _check_count(count: int, kind: str) -> None:
+        if count < 0 or count > MAX_COLLECTION_LENGTH:
+            raise ValueError(f"NBT {kind} 长度异常: {count}")
 
     def skip_payload(self, tag_type: int) -> None:
-        """跳过指定类型的 payload，不解析内容。"""
         if tag_type == TAG_BYTE:
-            self._pos += 1
+            self.read(1)
         elif tag_type == TAG_SHORT:
-            self._pos += 2
-        elif tag_type == TAG_INT:
-            self._pos += 4
-        elif tag_type == TAG_LONG:
-            self._pos += 8
-        elif tag_type == TAG_FLOAT:
-            self._pos += 4
-        elif tag_type == TAG_DOUBLE:
-            self._pos += 8
+            self.read(2)
+        elif tag_type in (TAG_INT, TAG_FLOAT):
+            self.read(4)
+        elif tag_type in (TAG_LONG, TAG_DOUBLE):
+            self.read(8)
         elif tag_type == TAG_BYTE_ARRAY:
-            length = self._read_int()
-            if length < 0 or length > MAX_LIST_LENGTH:
-                raise ValueError(f"NBT byte array 长度超限: {length}")
-            self._pos += length
+            count = self.i32()
+            self._check_count(count, "byte array")
+            self.read(count)
         elif tag_type == TAG_STRING:
-            length = self._read_ushort()
-            self._pos += length
+            self.read(self.u16())
         elif tag_type == TAG_LIST:
-            element_type = self._read_ubyte()
-            count = self._read_int()
-            if count < 0 or count > MAX_LIST_LENGTH:
-                raise ValueError(f"NBT list 长度超限: {count}")
-            if count == 0:
-                return
-            if element_type == TAG_END:
-                # B12：规范中非空 list 的元素类型不能是 END，
-                # 静默 return 会导致位置指针错乱，防御性报错
-                raise ValueError("NBT list 元素类型为 END 但长度非 0，数据异常")
-            self._depth += 1
-            if self._depth > MAX_NBT_DEPTH:
-                raise ValueError(f"NBT 递归深度超限: {self._depth}")
-            for _ in range(count):
-                self.skip_payload(element_type)
-            self._depth -= 1
+            element_type = self.u8()
+            count = self.i32()
+            self._check_count(count, "list")
+            if count and element_type == TAG_END:
+                raise ValueError("非空 NBT list 的元素类型不能是 TAG_END")
+            self._enter()
+            try:
+                for _ in range(count):
+                    self.skip_payload(element_type)
+            finally:
+                self._leave()
         elif tag_type == TAG_COMPOUND:
-            self._depth += 1
-            if self._depth > MAX_NBT_DEPTH:
-                raise ValueError(f"NBT 递归深度超限: {self._depth}")
-            while True:
-                child_type = self._read_ubyte()
-                if child_type == TAG_END:
-                    break
-                self._read_string()  # skip name
-                self.skip_payload(child_type)
-            self._depth -= 1
+            self._enter()
+            try:
+                while True:
+                    child_type = self.u8()
+                    if child_type == TAG_END:
+                        break
+                    self.string()
+                    self.skip_payload(child_type)
+            finally:
+                self._leave()
         elif tag_type == TAG_INT_ARRAY:
-            length = self._read_int()
-            if length < 0 or length > MAX_LIST_LENGTH:
-                raise ValueError(f"NBT int array 长度超限: {length}")
-            self._pos += length * 4
+            count = self.i32()
+            self._check_count(count, "int array")
+            self.read(count * 4)
         elif tag_type == TAG_LONG_ARRAY:
-            length = self._read_int()
-            if length < 0 or length > MAX_LIST_LENGTH:
-                raise ValueError(f"NBT long array 长度超限: {length}")
-            self._pos += length * 8
-
-    def read_root(self) -> dict[str, Any]:
-        """读取根 Compound 标签。"""
-        tag_type = self._read_ubyte()
-        if tag_type != TAG_COMPOUND:
-            raise ValueError(f"根标签不是 Compound (got {tag_type})")
-        self._read_string()  # 根名称
-        return self._read_compound_body()
-
-    def _read_payload(self, tag_type: int) -> Any:
-        if tag_type == TAG_BYTE:
-            return struct.unpack("<b", self._read(1))[0]
-        elif tag_type == TAG_SHORT:
-            return struct.unpack("<h", self._read(2))[0]
-        elif tag_type == TAG_INT:
-            return struct.unpack("<i", self._read(4))[0]
-        elif tag_type == TAG_LONG:
-            return struct.unpack("<q", self._read(8))[0]
-        elif tag_type == TAG_FLOAT:
-            return struct.unpack("<f", self._read(4))[0]
-        elif tag_type == TAG_DOUBLE:
-            return struct.unpack("<d", self._read(8))[0]
-        elif tag_type == TAG_BYTE_ARRAY:
-            length = self._read_int()
-            if length < 0 or length > MAX_LIST_LENGTH:
-                raise ValueError(f"NBT byte array 长度超限: {length}")
-            return list(struct.unpack(f"<{length}b", self._read(length)))
-        elif tag_type == TAG_STRING:
-            return self._read_string()
-        elif tag_type == TAG_LIST:
-            element_type = self._read_ubyte()
-            count = self._read_int()
-            if count < 0 or count > MAX_LIST_LENGTH:
-                raise ValueError(f"NBT list 长度超限: {count}")
-            if count == 0:
-                return []
-            if element_type == TAG_END:
-                # B12：同 skip_payload，防御性报错
-                raise ValueError("NBT list 元素类型为 END 但长度非 0，数据异常")
-            self._depth += 1
-            if self._depth > MAX_NBT_DEPTH:
-                raise ValueError(f"NBT 递归深度超限: {self._depth}")
-            result = [self._read_payload(element_type) for _ in range(count)]
-            self._depth -= 1
-            return result
-        elif tag_type == TAG_COMPOUND:
-            self._depth += 1
-            if self._depth > MAX_NBT_DEPTH:
-                raise ValueError(f"NBT 递归深度超限: {self._depth}")
-            result = self._read_compound_body()
-            self._depth -= 1
-            return result
-        elif tag_type == TAG_INT_ARRAY:
-            length = self._read_int()
-            if length < 0 or length > MAX_LIST_LENGTH:
-                raise ValueError(f"NBT int array 长度超限: {length}")
-            return list(struct.unpack(f"<{length}i", self._read(length * 4)))
-        elif tag_type == TAG_LONG_ARRAY:
-            length = self._read_int()
-            if length < 0 or length > MAX_LIST_LENGTH:
-                raise ValueError(f"NBT long array 长度超限: {length}")
-            return list(struct.unpack(f"<{length}q", self._read(length * 8)))
+            count = self.i32()
+            self._check_count(count, "long array")
+            self.read(count * 8)
         else:
             raise ValueError(f"未知 NBT 标签类型: {tag_type}")
 
-    def _read_compound_body(self) -> dict[str, Any]:
+    def payload(self, tag_type: int) -> Any:
+        if tag_type == TAG_BYTE:
+            return self.i8()
+        if tag_type == TAG_SHORT:
+            return self.i16()
+        if tag_type == TAG_INT:
+            return self.i32()
+        if tag_type == TAG_LONG:
+            return self.i64()
+        if tag_type == TAG_FLOAT:
+            return self.f32()
+        if tag_type == TAG_DOUBLE:
+            return self.f64()
+        if tag_type == TAG_BYTE_ARRAY:
+            count = self.i32()
+            self._check_count(count, "byte array")
+            return list(struct.unpack(f"<{count}b", self.read(count))) if count else []
+        if tag_type == TAG_STRING:
+            return self.string()
+        if tag_type == TAG_LIST:
+            element_type = self.u8()
+            count = self.i32()
+            self._check_count(count, "list")
+            if count and element_type == TAG_END:
+                raise ValueError("非空 NBT list 的元素类型不能是 TAG_END")
+            self._enter()
+            try:
+                return [self.payload(element_type) for _ in range(count)]
+            finally:
+                self._leave()
+        if tag_type == TAG_COMPOUND:
+            self._enter()
+            try:
+                return self.compound()
+            finally:
+                self._leave()
+        if tag_type == TAG_INT_ARRAY:
+            count = self.i32()
+            self._check_count(count, "int array")
+            return list(struct.unpack(f"<{count}i", self.read(count * 4))) if count else []
+        if tag_type == TAG_LONG_ARRAY:
+            count = self.i32()
+            self._check_count(count, "long array")
+            return list(struct.unpack(f"<{count}q", self.read(count * 8))) if count else []
+        raise ValueError(f"未知 NBT 标签类型: {tag_type}")
+
+    def compound(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
         while True:
-            tag_type = self._read_ubyte()
+            tag_type = self.u8()
             if tag_type == TAG_END:
-                break
-            name = self._read_string()
-            result[name] = self._read_payload(tag_type)
-        return result
+                return result
+            name = self.string()
+            if name in result:
+                raise ValueError(f"NBT Compound 中存在重复字段: {name}")
+            result[name] = self.payload(tag_type)
+
+    def root(self) -> dict[str, Any]:
+        if self.u8() != TAG_COMPOUND:
+            raise ValueError("level.dat 根标签不是 Compound")
+        self.string()
+        return self.compound()
 
 
-# ------------------------------------------------------------------
-# 二进制补丁辅助函数
-# ------------------------------------------------------------------
+def parse_level_dat_header(data: bytes) -> tuple[int, int]:
+    if len(data) < 9:
+        raise ValueError("level.dat 太短")
+    version, declared_length = struct.unpack("<II", data[:8])
+    actual_length = len(data) - 8
+    if declared_length != actual_length:
+        raise ValueError(
+            f"level.dat NBT 长度头不匹配: declared={declared_length}, actual={actual_length}"
+        )
+    return version, declared_length
 
 
-def get_root_body_offset(data: bytes, has_header: bool = False) -> int:
-    """获取根 Compound body 在原始数据中的绝对偏移量。"""
-    offset = 8 if has_header else 0
+def read_bedrock_nbt(data: bytes, *, has_header: bool = False, strict: bool = True) -> dict[str, Any]:
+    offset = 0
+    if has_header:
+        parse_level_dat_header(data)
+        offset = 8
     reader = NBTReader(data, offset)
-    reader._read_ubyte()  # TAG_COMPOUND
-    reader._read_string()  # 根名称
-    return reader.position
+    value = reader.root()
+    if strict and reader.pos != len(data):
+        raise ValueError(f"NBT 根标签后存在 {len(data) - reader.pos} 个尾随字节")
+    return value
 
 
-def find_byte_field_value_offset(
-    data: bytes, compound_body_offset: int, field_name: str
-) -> int | None:
-    """在 Compound body 中查找 BYTE 字段的值偏移量。
+def get_root_body_offset(data: bytes, *, has_header: bool = False) -> int:
+    offset = 8 if has_header else 0
+    if has_header:
+        parse_level_dat_header(data)
+    reader = NBTReader(data, offset)
+    if reader.u8() != TAG_COMPOUND:
+        raise ValueError("根标签不是 Compound")
+    reader.string()
+    return reader.pos
 
-    Returns:
-        值字节的绝对偏移量，或 None（未找到或不是 BYTE 类型）
-    """
+
+def scan_compound_fields(data: bytes, compound_body_offset: int) -> tuple[dict[str, FieldInfo], int]:
     reader = NBTReader(data, compound_body_offset)
+    fields: dict[str, FieldInfo] = {}
     while True:
-        tag_type = reader._read_ubyte()
+        tag_offset = reader.pos
+        tag_type = reader.u8()
         if tag_type == TAG_END:
-            return None
-        name = reader._read_string()
-        value_pos = reader.position
-        if name == field_name:
-            if tag_type == TAG_BYTE:
-                return value_pos
-            return None
-        reader.skip_payload(tag_type)
-
-
-def find_compound_field_offset(
-    data: bytes, compound_body_offset: int, field_name: str
-) -> int | None:
-    """在 Compound body 中查找子 Compound 的 body 偏移量。
-
-    Returns:
-        子 Compound body 的绝对偏移量，或 None
-    """
-    reader = NBTReader(data, compound_body_offset)
-    while True:
-        tag_type = reader._read_ubyte()
-        if tag_type == TAG_END:
-            return None
-        name = reader._read_string()
-        body_offset = reader.position
-        if name == field_name and tag_type == TAG_COMPOUND:
-            return body_offset
-        reader.skip_payload(tag_type)
-
-
-def find_compound_end_offset(
-    data: bytes, compound_body_offset: int
-) -> int:
-    """查找 Compound body 的 TAG_END 偏移量。
-
-    Returns:
-        TAG_END 字节的绝对偏移量
-    """
-    reader = NBTReader(data, compound_body_offset)
-    while True:
-        tag_type = reader._read_ubyte()
-        if tag_type == TAG_END:
-            return reader.position - 1
-        reader._read_string()  # skip name
+            return fields, tag_offset
+        name = reader.string()
+        if name in fields:
+            raise ValueError(f"NBT Compound 中存在重复字段: {name}")
+        fields[name] = FieldInfo(tag_type=tag_type, payload_offset=reader.pos)
         reader.skip_payload(tag_type)
 
 
 def make_byte_tag_bytes(name: str, value: int) -> bytes:
-    """构造 Compound 内一个 BYTE 字段的完整字节（类型+名称长度+名称+值）。"""
-    encoded_name = name.encode("utf-8")
+    encoded = name.encode("utf-8")
+    if len(encoded) > 0xFFFF:
+        raise ValueError("NBT tag name 太长")
     return (
         struct.pack("<B", TAG_BYTE)
-        + struct.pack("<H", len(encoded_name))
-        + encoded_name
-        + struct.pack("<b", value)
+        + struct.pack("<H", len(encoded))
+        + encoded
+        + struct.pack("<b", int(value))
     )
 
 
 def make_compound_tag_bytes(name: str, body: bytes) -> bytes:
-    """构造一个命名的 COMPOUND 标签的完整字节。"""
-    encoded_name = name.encode("utf-8")
+    encoded = name.encode("utf-8")
+    if len(encoded) > 0xFFFF:
+        raise ValueError("NBT tag name 太长")
     return (
         struct.pack("<B", TAG_COMPOUND)
-        + struct.pack("<H", len(encoded_name))
-        + encoded_name
+        + struct.pack("<H", len(encoded))
+        + encoded
         + body
         + struct.pack("<B", TAG_END)
     )
-
-
-# ------------------------------------------------------------------
-# 高级读写接口（用于读取检测，不用于写回）
-# ------------------------------------------------------------------
-
-
-def read_bedrock_nbt(data: bytes, has_header: bool = False) -> dict[str, Any]:
-    """读取 Bedrock NBT 数据（仅用于检测，不用于写回 level.dat）。"""
-    if has_header:
-        if len(data) < 8:
-            raise ValueError("数据太短，无法包含头")
-        data = data[8:]
-    reader = NBTReader(data)
-    return reader.read_root()

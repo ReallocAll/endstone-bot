@@ -1,148 +1,401 @@
-"""level.dat 实验功能编辑器（二进制补丁方式）。
+"""Safe, minimal Beta APIs patching for Bedrock level.dat.
 
-通过二进制补丁修改 level.dat，只修改/插入需要变更的字节，
-不重新序列化整个 NBT 树，确保不破坏世界种子、出生点、时间等数据。
-
-参考实际已启用 Beta APIs 的 level.dat 文件结构:
-  experiments Compound 内包含 3 个 BYTE 标签:
-    - gametest: 1  → "Beta APIs" 开关
-    - experiments_ever_used: 1  → 标记曾使用实验功能
-    - saved_with_toggled_experiments: 1  → 标记保存时实验已开启
-
-level.dat 格式（Bedrock 小端 NBT）:
-  8 字节头: version (uint32_le) + length (uint32_le)
-  后接 NBT 数据（小端，无压缩）
+This module is intentionally conservative:
+- resolves a single world from server.properties; never scans worlds/ for guesses
+- validates the complete little-endian NBT before and after patching
+- rejects symlinks, duplicate tags, wrong tag types and header-length mismatches
+- creates and verifies a standalone backup before touching level.dat
+- writes through a same-directory temp file + fsync + os.replace
+- rolls back automatically if post-write verification fails
 """
 
 from __future__ import annotations
 
-import shutil
+import copy
+import hashlib
+import os
+import stat
 import struct
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from endstone_bot.nbt import (
-    find_byte_field_value_offset,
-    find_compound_end_offset,
-    find_compound_field_offset,
+    TAG_BYTE,
+    TAG_COMPOUND,
     get_root_body_offset,
     make_byte_tag_bytes,
     make_compound_tag_bytes,
+    parse_level_dat_header,
     read_bedrock_nbt,
+    scan_compound_fields,
 )
 
-
-# experiments Compound 内需要设置的 BYTE 标签
-EXPERIMENTS_FIELDS = {
-    "gametest": 1,                         # "Beta APIs"
-    "experiments_ever_used": 1,            # 标记曾使用实验功能
-    "saved_with_toggled_experiments": 1,   # 标记保存时实验已开启
+EXPERIMENTS_FIELDS: dict[str, int] = {
+    "gametest": 1,
+    "experiments_ever_used": 1,
+    "saved_with_toggled_experiments": 1,
 }
 
+MAX_LEVEL_DAT_BYTES = 32 * 1024 * 1024
 
-def enable_experiments(level_dat_path: Path) -> bool:
-    """在 level.dat 中启用实验功能（二进制补丁）。
 
-    只修改/插入实验功能相关的字节，不触碰其他任何数据。
+@dataclass(frozen=True)
+class WorldResolution:
+    level_dat: Path | None
+    world_dir: Path | None
+    server_root: Path | None
+    level_name: str
+    error: str = ""
 
-    Args:
-        level_dat_path: level.dat 文件路径
 
-    Returns:
-        True 表示成功修改了文件，False 表示无需修改或修改失败
+@dataclass(frozen=True)
+class PatchResult:
+    status: str
+    changed: bool
+    message: str
+    backup_path: Path | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status in {"already-enabled", "patched"}
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_server_properties(path: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    text = path.read_text(encoding="utf-8-sig")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        result[key.strip()] = value.strip()
+    return result
+
+
+def resolve_level_dat_for_startup(cwd: Path) -> WorldResolution:
+    """Resolve exactly one level.dat from fixed BDS roots.
+
+    Supported layouts:
+      <cwd>/server.properties + <cwd>/worlds/<level-name>/level.dat
+      <cwd>/bedrock_server/server.properties + .../worlds/<level-name>/level.dat
+
+    We deliberately do not scan worlds/ and do not choose a directory by recency.
     """
-    if not level_dat_path.exists():
-        return False
 
-    raw = level_dat_path.read_bytes()
-    if len(raw) < 8:
-        return False
+    roots: list[Path] = []
+    for raw in (cwd, cwd / "bedrock_server"):
+        resolved = raw.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
 
-    # 解析头部
-    version, nbt_length = struct.unpack("<II", raw[:8])
+    matches: list[tuple[Path, Path, Path, str]] = []
+    errors: list[str] = []
 
-    # 获取根 Compound body 偏移量
-    try:
-        root_body = get_root_body_offset(raw, has_header=True)
-    except Exception:
-        return False
+    for root in roots:
+        props_path = root / "server.properties"
+        if not props_path.is_file():
+            continue
+        try:
+            props = _read_server_properties(props_path)
+        except Exception as exc:
+            errors.append(f"{props_path}: 无法读取 ({exc})")
+            continue
 
-    patches: list[tuple[int, int, bytes]] = []  # (offset, delete_len, insert_bytes)
-    modified = False
+        level_name = str(props.get("level-name", "")).strip()
+        if not level_name:
+            errors.append(f"{props_path}: 缺少 level-name")
+            continue
 
-    # 查找 experiments Compound
-    exp_body = find_compound_field_offset(raw, root_body, "experiments")
+        worlds_root = (root / "worlds").resolve()
+        world_dir = (worlds_root / level_name).resolve()
+        try:
+            world_dir.relative_to(worlds_root)
+        except ValueError:
+            errors.append(f"{props_path}: level-name 越出 worlds 目录")
+            continue
 
-    if exp_body is not None:
-        # experiments Compound 已存在，逐个检查/设置 byte 标签
-        for tag_name, tag_value in EXPERIMENTS_FIELDS.items():
-            val_offset = find_byte_field_value_offset(raw, exp_body, tag_name)
-            if val_offset is not None:
-                # 标签已存在，检查值
-                current = struct.unpack("<b", raw[val_offset:val_offset + 1])[0]
-                if current != tag_value:
-                    # 修改值（原地替换 1 字节，不改变长度）
-                    patches.append((val_offset, 1, struct.pack("<b", tag_value)))
-                    modified = True
-            else:
-                # 标签不存在，在 experiments Compound 的 TAG_END 前插入
-                exp_end = find_compound_end_offset(raw, exp_body)
-                new_tag = make_byte_tag_bytes(tag_name, tag_value)
-                patches.append((exp_end, 0, new_tag))
-                modified = True
+        level_dat = world_dir / "level.dat"
+        if level_dat.is_file():
+            # Keep the lexical level.dat path so enable_beta_apis_safely can still
+            # detect and reject a symlink. Use resolve() only for deduplication.
+            matches.append((level_dat, world_dir, root, level_name))
+        else:
+            errors.append(f"{level_dat}: 不存在")
+
+    unique: dict[Path, tuple[Path, Path, Path, str]] = {}
+    for item in matches:
+        unique[item[0].resolve()] = item
+
+    if len(unique) == 1:
+        level_dat, world_dir, root, level_name = next(iter(unique.values()))
+        return WorldResolution(level_dat, world_dir, root, level_name)
+
+    if len(unique) > 1:
+        joined = ", ".join(str(path) for path in unique)
+        return WorldResolution(
+            None, None, None, "",
+            f"检测到多个可能的 BDS 世界，拒绝自动修改: {joined}",
+        )
+
+    detail = "; ".join(errors) if errors else "固定位置中没有找到 server.properties"
+    return WorldResolution(None, None, None, "", detail)
+
+
+def _validate_level_dat_bytes(raw: bytes) -> dict[str, Any]:
+    if len(raw) > MAX_LEVEL_DAT_BYTES:
+        raise ValueError(f"level.dat 过大，拒绝修改: {len(raw)} bytes")
+    parse_level_dat_header(raw)
+    return read_bedrock_nbt(raw, has_header=True, strict=True)
+
+
+def _build_patch(raw: bytes) -> bytes | None:
+    before = _validate_level_dat_bytes(raw)
+    root_body = get_root_body_offset(raw, has_header=True)
+    root_fields, root_end = scan_compound_fields(raw, root_body)
+
+    patches: list[tuple[int, int, bytes]] = []
+    experiments_info = root_fields.get("experiments")
+
+    if experiments_info is None:
+        body = b"".join(make_byte_tag_bytes(name, value) for name, value in EXPERIMENTS_FIELDS.items())
+        patches.append((root_end, 0, make_compound_tag_bytes("experiments", body)))
     else:
-        # experiments Compound 不存在，在根 Compound 的 TAG_END 前插入整个 Compound
-        root_end = find_compound_end_offset(raw, root_body)
-        exp_body_bytes = b""
-        for tag_name, tag_value in EXPERIMENTS_FIELDS.items():
-            exp_body_bytes += make_byte_tag_bytes(tag_name, tag_value)
-        exp_compound = make_compound_tag_bytes("experiments", exp_body_bytes)
-        patches.append((root_end, 0, exp_compound))
-        modified = True
+        if experiments_info.tag_type != TAG_COMPOUND:
+            raise ValueError("level.dat 的 experiments 字段存在但不是 Compound，拒绝修改")
 
-    if not modified:
-        return False
+        exp_fields, exp_end = scan_compound_fields(raw, experiments_info.payload_offset)
+        for name, wanted in EXPERIMENTS_FIELDS.items():
+            info = exp_fields.get(name)
+            if info is None:
+                patches.append((exp_end, 0, make_byte_tag_bytes(name, wanted)))
+                continue
+            if info.tag_type != TAG_BYTE:
+                raise ValueError(f"experiments.{name} 存在但不是 Byte，拒绝修改")
+            current = struct.unpack("<b", raw[info.payload_offset:info.payload_offset + 1])[0]
+            if current != wanted:
+                patches.append((info.payload_offset, 1, struct.pack("<b", wanted)))
 
-    # 应用补丁（从后往前应用，避免偏移量变化）
-    patches.sort(key=lambda p: p[0], reverse=True)
+    if not patches:
+        experiments = before.get("experiments")
+        if not isinstance(experiments, dict):
+            raise ValueError("experiments 解析结果异常")
+        if all(experiments.get(name) == value for name, value in EXPERIMENTS_FIELDS.items()):
+            return None
+        raise ValueError("Beta APIs 状态异常，拒绝无补丁写入")
 
     result = bytearray(raw)
-    for offset, delete_len, insert_bytes in patches:
+    for offset, delete_len, insert_bytes in sorted(patches, key=lambda item: item[0], reverse=True):
         result[offset:offset + delete_len] = insert_bytes
 
-    # 更新头部长度（如果插入了字节）
-    new_nbt_length = len(result) - 8
-    if new_nbt_length != nbt_length:
-        struct.pack_into("<I", result, 4, new_nbt_length)
+    struct.pack_into("<I", result, 4, len(result) - 8)
+    candidate = bytes(result)
+    after = _validate_level_dat_bytes(candidate)
 
-    # 备份原文件
-    backup = level_dat_path.with_suffix(".dat.bak")
-    if not backup.exists():
-        shutil.copy2(level_dat_path, backup)
+    expected = copy.deepcopy(before)
+    experiments = expected.get("experiments")
+    if experiments is None:
+        experiments = {}
+        expected["experiments"] = experiments
+    if not isinstance(experiments, dict):
+        raise ValueError("experiments 语义结构异常")
+    experiments.update(EXPERIMENTS_FIELDS)
 
-    # 写回
-    try:
-        level_dat_path.write_bytes(bytes(result))
-        return True
-    except Exception:
-        return False
+    if after != expected:
+        raise ValueError("补丁后的 NBT 除实验字段外发生了语义变化，拒绝写入")
+
+    return candidate
 
 
-def is_experiments_enabled(level_dat_path: Path) -> bool:
-    """检查 level.dat 中是否已启用实验功能。
-
-    Args:
-        level_dat_path: level.dat 文件路径
-
-    Returns:
-        True 表示已启用
-    """
-    if not level_dat_path.exists():
-        return False
-
+def is_beta_apis_enabled(level_dat_path: Path) -> bool:
     try:
         raw = level_dat_path.read_bytes()
-        data = read_bedrock_nbt(raw, has_header=True)
+        data = _validate_level_dat_bytes(raw)
         experiments = data.get("experiments", {})
-        return experiments.get("gametest", 0) == 1
+        return (
+            isinstance(experiments, dict)
+            and all(experiments.get(name) == value for name, value in EXPERIMENTS_FIELDS.items())
+        )
     except Exception:
         return False
+
+
+def _fsync_dir(path: Path) -> None:
+    if os.name == "nt":
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _atomic_write(path: Path, data: bytes, mode: int) -> None:
+    tmp = path.with_name(path.name + ".endstone-bot.tmp")
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.chmod(tmp, stat.S_IMODE(mode))
+        except OSError:
+            pass
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _create_verified_backup(
+    level_dat_path: Path,
+    original: bytes,
+    backup_root: Path,
+    world_name: str,
+    mode: int,
+) -> Path:
+    safe_world = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in world_name) or "world"
+    target_dir = backup_root / safe_world
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    digest = _sha256(original)
+    backup = target_dir / f"level.dat.{stamp}.{digest[:12]}.bak"
+    counter = 1
+    while backup.exists():
+        backup = target_dir / f"level.dat.{stamp}.{digest[:12]}.{counter}.bak"
+        counter += 1
+
+    tmp = backup.with_suffix(backup.suffix + ".tmp")
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(original)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.chmod(tmp, stat.S_IMODE(mode))
+        except OSError:
+            pass
+        os.replace(tmp, backup)
+        _fsync_dir(target_dir)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if _sha256(backup.read_bytes()) != digest:
+        backup.unlink(missing_ok=True)
+        raise IOError("level.dat 备份校验失败")
+    return backup
+
+
+def _prune_backups(backup_root: Path, world_name: str, keep: int) -> None:
+    """Best-effort retention; cleanup failure must never change patch success."""
+    try:
+        keep = max(1, min(20, int(keep)))
+        safe_world = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in world_name) or "world"
+        folder = backup_root / safe_world
+        if not folder.is_dir():
+            return
+        backups = sorted(
+            folder.glob("level.dat.*.bak"),
+            key=lambda p: p.stat().st_mtime_ns,
+            reverse=True,
+        )
+    except (OSError, ValueError, TypeError):
+        return
+
+    for old in backups[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def enable_beta_apis_safely(
+    level_dat_path: Path,
+    *,
+    backup_root: Path,
+    world_name: str,
+    backup_keep: int = 5,
+) -> PatchResult:
+    """Enable Beta APIs with strict validation, atomic replacement and rollback."""
+
+    try:
+        if level_dat_path.is_symlink():
+            return PatchResult("rejected", False, "level.dat 是符号链接，拒绝自动修改")
+
+        st = level_dat_path.stat()
+        if not stat.S_ISREG(st.st_mode):
+            return PatchResult("rejected", False, "level.dat 不是普通文件，拒绝自动修改")
+
+        original = level_dat_path.read_bytes()
+        original_hash = _sha256(original)
+        candidate = _build_patch(original)
+        if candidate is None:
+            return PatchResult("already-enabled", False, "Beta APIs 已启用")
+
+        # TOCTOU guard: if anything changed the file after our initial read, abort.
+        current = level_dat_path.read_bytes()
+        if _sha256(current) != original_hash:
+            return PatchResult("rejected", False, "level.dat 在校验期间发生变化，拒绝写入")
+
+        backup = _create_verified_backup(
+            level_dat_path,
+            original,
+            backup_root,
+            world_name,
+            st.st_mode,
+        )
+
+        try:
+            _atomic_write(level_dat_path, candidate, st.st_mode)
+            written = level_dat_path.read_bytes()
+            if _sha256(written) != _sha256(candidate):
+                raise IOError("原子替换后 SHA-256 不匹配")
+            if not is_beta_apis_enabled(level_dat_path):
+                raise IOError("原子替换后 Beta APIs 验证失败")
+        except Exception as write_error:
+            rollback_error: Exception | None = None
+            try:
+                _atomic_write(level_dat_path, original, st.st_mode)
+                if _sha256(level_dat_path.read_bytes()) != original_hash:
+                    raise IOError("回滚后的 level.dat 与原文件 SHA-256 不一致")
+            except Exception as exc:
+                rollback_error = exc
+
+            if rollback_error is not None:
+                return PatchResult(
+                    "rollback-failed",
+                    False,
+                    f"写入失败且自动回滚失败: write={write_error}; rollback={rollback_error}; 备份={backup}",
+                    backup,
+                )
+            return PatchResult(
+                "rolled-back",
+                False,
+                f"写入后验证失败，已恢复原文件: {write_error}",
+                backup,
+            )
+
+        _prune_backups(backup_root, world_name, backup_keep)
+        return PatchResult(
+            "patched",
+            True,
+            "已安全启用 Beta APIs",
+            backup,
+        )
+
+    except FileNotFoundError:
+        return PatchResult("rejected", False, f"level.dat 不存在: {level_dat_path}")
+    except Exception as exc:
+        return PatchResult("rejected", False, f"安全校验未通过，未修改 level.dat: {exc}")
