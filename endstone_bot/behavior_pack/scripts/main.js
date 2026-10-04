@@ -289,6 +289,9 @@ function finishRemove(name, sim) {
             }
         } catch (_) {}
         if (simulatedPlayers.get(name) === sim) simulatedPlayers.delete(name);
+        deadPlayers.delete(name);
+        tridentBusy.delete(name);
+        desiredPoses.delete(name);
         reply("bot:removed", { n: name });
     }, 2);
 }
@@ -300,6 +303,9 @@ function doRemove(nameValue) {
         reply("bot:removed", { n: name, existed: false });
         return;
     }
+    deadPlayers.delete(name);
+    tridentBusy.delete(name);
+    desiredPoses.delete(name);
     try {
         sim.disconnect();
     } catch (e) {
@@ -563,9 +569,11 @@ try {
     world.afterEvents.playerLeave.subscribe((event) => {
         const name = String(event.playerName || "");
         if (simulatedPlayers.has(name)) {
+            // A death may also surface as a leave on some beta builds. The
+            // entityDie handler owns that lifecycle and is about to respawn it.
+            if (deadPlayers.has(name)) return;
             simulatedPlayers.delete(name);
             tridentBusy.delete(name);
-            deadPlayers.delete(name);
             reply("bot:lost", { n: name, reason: "left" });
         }
     });
