@@ -412,19 +412,65 @@ function doTeleport(req) {
     }
 }
 
-function findTridentSlot(sim) {
+function findTrident(sim) {
     try {
         const inventory = sim.getComponent("minecraft:inventory");
         const container = inventory?.container;
-        if (!container || !container.isValid) return -1;
+        if (!container || !container.isValid) return null;
         for (let slot = 0; slot < container.size; slot++) {
             const item = container.getItem(slot);
             if (item && item.typeId === "minecraft:trident") {
-                return slot;
+                return { container, slot, item };
             }
         }
     } catch (_) {}
-    return -1;
+    return null;
+}
+
+function hasUnsupportedTridentEnchantments(item) {
+    try {
+        const enchantable = item.getComponent("minecraft:enchantable");
+        return Boolean(enchantable && enchantable.getEnchantments().length > 0);
+    } catch (_) {
+        return false;
+    }
+}
+
+function normalizedPoseDirection(pose) {
+    const dx = Number(pose.dx ?? 0);
+    const dy = Number(pose.dy ?? 0);
+    const dz = Number(pose.dz ?? 0);
+    const lengthSq = dx * dx + dy * dy + dz * dz;
+    if (!Number.isFinite(lengthSq) || lengthSq <= 1e-8) return null;
+    const invLength = 1 / Math.sqrt(lengthSq);
+    return {
+        x: dx * invLength,
+        y: dy * invLength,
+        z: dz * invLength,
+    };
+}
+
+function restoreInventoryItem(container, slot, originalItem) {
+    try {
+        container.setItem(slot, originalItem);
+    } catch (_) {}
+}
+
+function removeOneInventoryItem(container, slot, originalItem) {
+    const amount = Number(originalItem.amount ?? 1);
+    if (amount <= 1) {
+        container.setItem(slot);
+        return;
+    }
+    const remaining = originalItem.clone();
+    remaining.amount = amount - 1;
+    container.setItem(slot, remaining);
+}
+
+function cleanupProjectile(entity) {
+    try {
+        if (entity?.isValid) entity.remove();
+    } catch (_) {}
 }
 
 function tridentResult(name, requester, ok, reason = "") {
@@ -434,19 +480,6 @@ function tridentResult(name, requester, ok, reason = "") {
         ok: Boolean(ok),
         reason: String(reason || ""),
     });
-}
-
-function finishTrident(name, requester, sim) {
-    system.runTimeout(() => {
-        try {
-            sim.stopUsingItem();
-            tridentResult(name, requester, true);
-        } catch (e) {
-            tridentResult(name, requester, false, `release_failed:${String(e)}`);
-        } finally {
-            tridentBusy.delete(name);
-        }
-    }, 12);
 }
 
 function doThrowTrident(req) {
@@ -471,48 +504,77 @@ function doThrowTrident(req) {
         return;
     }
 
-    const slot = findTridentSlot(sim);
-    if (slot < 0) {
+    const found = findTrident(sim);
+    if (!found) {
         tridentResult(name, requester, false, "no_trident");
+        return;
+    }
+    if (hasUnsupportedTridentEnchantments(found.item)) {
+        tridentResult(name, requester, false, "enchanted_trident_unsupported");
+        return;
+    }
+
+    const direction = normalizedPoseDirection(pose);
+    if (!direction) {
+        tridentResult(name, requester, false, "invalid_direction");
         return;
     }
 
     tridentBusy.add(name);
+    let projectileEntity = null;
+    let inventoryChanged = false;
+    const originalItem = found.item.clone();
+
     try {
         teleportSim(sim, pose);
-    } catch (e) {
-        tridentBusy.delete(name);
-        tridentResult(name, requester, false, `pose_failed:${String(e)}`);
-        return;
-    }
+        orientSim(sim, pose);
 
-    system.runTimeout(() => {
-        try {
-            // Commit visual rotation + controller/body rotation first.
-            orientSim(sim, pose);
-        } catch (e) {
-            tridentBusy.delete(name);
-            tridentResult(name, requester, false, `aim_failed:${String(e)}`);
-            return;
+        const head = sim.getHeadLocation();
+        const launch = {
+            x: head.x + direction.x * 0.6,
+            y: head.y + direction.y * 0.6,
+            z: head.z + direction.z * 0.6,
+        };
+
+        projectileEntity = sim.dimension.spawnEntity("minecraft:thrown_trident", launch);
+        const projectile = projectileEntity.getComponent("minecraft:projectile");
+        if (!projectile) {
+            throw new Error("minecraft:projectile component missing");
         }
 
-        // Do not start item use in the same tick as the controller rotation.
-        // BDS 26.51 otherwise may launch chargeable projectiles with the stale
-        // default controller direction even though the model already looks right.
-        system.runTimeout(() => {
-            try {
-                if (!sim.useItemInSlot(slot)) {
-                    tridentBusy.delete(name);
-                    tridentResult(name, requester, false, "use_failed");
-                    return;
-                }
-                finishTrident(name, requester, sim);
-            } catch (e) {
-                tridentBusy.delete(name);
-                tridentResult(name, requester, false, `use_failed:${String(e)}`);
-            }
-        }, 1);
-    }, 2);
+        // Set owner before launch so collision, damage and attacker attribution
+        // are evaluated as a player-thrown projectile.
+        projectile.owner = sim;
+
+        // Consume exactly the physical trident that was found in the bot's
+        // inventory. Any later failure restores the exact ItemStack clone.
+        removeOneInventoryItem(found.container, found.slot, originalItem);
+        inventoryChanged = true;
+
+        const speed = 2.5;
+        projectile.shoot({
+            x: direction.x * speed,
+            y: direction.y * speed,
+            z: direction.z * speed,
+        });
+
+        try {
+            sim.dimension.playSound("item.trident.throw", head, {
+                volume: 1.0,
+                pitch: 1.0,
+            });
+        } catch (_) {}
+
+        tridentResult(name, requester, true);
+    } catch (e) {
+        cleanupProjectile(projectileEntity);
+        if (inventoryChanged) {
+            restoreInventoryItem(found.container, found.slot, originalItem);
+        }
+        tridentResult(name, requester, false, `projectile_failed:${String(e)}`);
+    } finally {
+        tridentBusy.delete(name);
+    }
 }
 
 function clearAll() {
