@@ -71,15 +71,24 @@ function reply(eventId, data) {
     if (!bridgeToken) return false;
     const payload = { ...data, t: bridgeToken, p: PROTOCOL };
     const msg = JSON.stringify(payload);
-    if (msg.length > 2048) {
-        console.warn(`[EndstoneBot] refusing oversized ${eventId}: ${msg.length} chars`);
+    const encoded = encodeURIComponent(msg);
+    const eventName = String(eventId || "").replace(/^bot:/, "");
+    if (encoded.length > 6000) {
+        console.warn(`[EndstoneBot] refusing oversized callback ${eventId}: ${encoded.length} chars`);
         return false;
     }
     try {
-        world.getDimension("overworld").runCommand(`scriptevent ${eventId} ${msg}`);
+        const result = world.getDimension("overworld").runCommand(
+            `botbridge ${eventName} ${encoded}`
+        );
+        if (eventId === "bot:hello_ack") {
+            console.log(
+                `[EndstoneBot] botbridge hello_ack dispatched, successCount=${String(result?.successCount ?? "unknown")}`
+            );
+        }
         return true;
     } catch (e) {
-        console.warn(`[EndstoneBot] reply failed (${eventId}): ${e}`);
+        console.warn(`[EndstoneBot] callback failed (${eventId}): ${e}`);
         return false;
     }
 }
