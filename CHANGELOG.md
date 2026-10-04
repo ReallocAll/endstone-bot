@@ -5,6 +5,16 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.3.7] - 2026-10-05
+
+### 优化
+
+- bridge 发出的内部 `scriptevent` 改用静默 `CommandSenderWrapper`，过滤成功命令回显，同时保留错误输出
+- 移除行为包正常握手、hello ack 与 bridge loaded 的 INFO 级脚本日志
+- 保留协议拒绝、回调失败、GameTest 启动失败、视角同步异常等 warning/error 诊断
+- 行为包版本提升至 4.2.7，确保现有世界中的 bridge 副本会自动更新
+
+
 ## [3.2.3] - 2026-08-21
 
 ### 修复
