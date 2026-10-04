@@ -150,14 +150,24 @@ function orientSim(sim, req) {
     const lengthSq = dx * dx + dy * dy + dz * dz;
 
     if (Number.isFinite(lengthSq) && lengthSq > 1e-8) {
+        const invLength = 1 / Math.sqrt(lengthSq);
         try {
             const head = sim.getHeadLocation();
-            const invLength = 1 / Math.sqrt(lengthSq);
-            sim.lookAt({
+            const target = {
                 x: head.x + dx * invLength * 32,
                 y: head.y + dy * invLength * 32,
                 z: head.z + dz * invLength * 32,
-            });
+            };
+
+            // Important: use the SimulatedPlayer-specific controller API first.
+            // Entity.lookAt() updates visible entity rotation, but item-use actions
+            // can continue to use the GameTest simulated-player control rotation.
+            if (typeof sim.lookAtLocation === "function") {
+                sim.lookAtLocation(target, GameTest.LookDuration?.Instant ?? "Instant");
+                return;
+            }
+
+            sim.lookAt(target);
             return;
         } catch (_) {}
     }
@@ -450,7 +460,8 @@ function doThrowTrident(req) {
 
     system.runTimeout(() => {
         try {
-            // Re-apply the exact world-space look direction immediately before use.
+            // Re-apply the exact world-space look direction through the
+            // SimulatedPlayer controller immediately before using the item.
             orientSim(sim, pose);
             if (!sim.useItemInSlot(slot)) {
                 tridentBusy.delete(name);
@@ -462,7 +473,7 @@ function doThrowTrident(req) {
             tridentBusy.delete(name);
             tridentResult(name, requester, false, `use_failed:${String(e)}`);
         }
-    }, 1);
+    }, 2);
 }
 
 function clearAll() {
