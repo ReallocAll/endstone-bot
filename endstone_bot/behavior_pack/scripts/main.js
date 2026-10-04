@@ -2,7 +2,7 @@
  * Endstone Bot bridge v4.
  *
  * Security model:
- * - handshake is accepted only from ScriptEvent sourceType=Server
+ * - handshake accepts native Server sources and headless Endstone console origins
  * - the first valid bot:hello establishes the per-process token
  * - every later command must carry the exact same token and protocol
  *
@@ -21,9 +21,26 @@ let activeTest = null;
 const simulatedPlayers = new Map();
 const pendingSpawns = [];
 
-function isServerSource(event) {
+function isTrustedServerSource(event) {
     try {
-        return String(event.sourceType ?? "").toLowerCase().includes("server");
+        const sourceType = String(event.sourceType ?? "");
+        if (sourceType.toLowerCase().includes("server")) return true;
+
+        // Endstone dispatches /scriptevent through its ConsoleCommandSender. On some
+        // BDS builds that custom command origin is not surfaced as ScriptEventSource.Server,
+        // even though it has no entity/block/NPC initiator. Accept that headless origin,
+        // while still rejecting player/entity, command-block and NPC sourced events.
+        const hasActorSource =
+            event.sourceEntity !== undefined ||
+            event.sourceBlock !== undefined ||
+            event.initiator !== undefined;
+        if (!hasActorSource) {
+            console.warn(
+                `[EndstoneBot] accepting headless server-origin scriptevent (sourceType=${sourceType || "unknown"})`
+            );
+            return true;
+        }
+        return false;
     } catch (_) {
         return false;
     }
@@ -67,7 +84,7 @@ function reply(eventId, data) {
 }
 
 function validCommand(event, data) {
-    if (!isServerSource(event)) return false;
+    if (!isTrustedServerSource(event)) return false;
     if (!bridgeToken) return false;
     if (data.t !== bridgeToken) return false;
     return Number(data.p) === PROTOCOL;
@@ -264,7 +281,7 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
     if (!data) return;
 
     if (event.id === "bot:hello") {
-        if (!isServerSource(event)) return;
+        if (!isTrustedServerSource(event)) return;
         if (Number(data.p) !== PROTOCOL || typeof data.t !== "string" || data.t.length < 16) return;
         if (bridgeToken && data.t !== bridgeToken) {
             return;
