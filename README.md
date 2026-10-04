@@ -111,7 +111,7 @@ SimulatedPlayer 依赖 Beta APIs。插件**不会自动修改正在运行的世�
 plugins/bot/enable_beta.py
 ```
 
-脚本中写入的是当前世界 `level.dat` 的精确绝对路径。需要启用 Beta APIs 时：
+脚本中写入的是当前世界 `level.dat` 的精确绝对路径，并且脚本本身是**单文件、自包含、仅依赖 Python 标准库**的，不需要 `endstone_bot` 能被当前解释器 import，也不需要设置 `PYTHONPATH`。需要启用 Beta APIs 时：
 
 1. 正常执行 `stop`，等待 BDS 完全退出；
 2. 使用运行 Endstone 的同一个 Python 环境执行脚本；
