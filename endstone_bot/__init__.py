@@ -1,4 +1,4 @@
 from endstone_bot.plugin import BotPlugin
 
 __all__ = ["BotPlugin"]
-__version__ = "4.3.5"
+__version__ = "4.3.6"
