@@ -14,7 +14,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
-import shutil
 import stat
 import struct
 from dataclasses import dataclass
@@ -400,53 +399,3 @@ def enable_beta_apis_safely(
         return PatchResult("rejected", False, f"level.dat 不存在: {level_dat_path}")
     except Exception as exc:
         return PatchResult("rejected", False, f"安全校验未通过，未修改 level.dat: {exc}")
-
-
-def main() -> int:
-    """Offline command-line fallback for headless servers.
-
-    Run while BDS is stopped:
-        endstone-bot-enable-beta
-    """
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Safely enable Bedrock Beta APIs in the configured world's level.dat."
-    )
-    parser.add_argument(
-        "--root",
-        type=Path,
-        default=Path.cwd(),
-        help="BDS root containing server.properties, or its parent containing bedrock_server/",
-    )
-    parser.add_argument(
-        "--backup-dir",
-        type=Path,
-        default=None,
-        help="Backup directory (default: <root>/plugins/bot/level_dat_backups)",
-    )
-    args = parser.parse_args()
-
-    resolution = resolve_level_dat_for_startup(args.root)
-    if resolution.level_dat is None or resolution.server_root is None:
-        print(f"ERROR: {resolution.error}")
-        return 2
-
-    backup_root = args.backup_dir
-    if backup_root is None:
-        backup_root = resolution.server_root / "plugins" / "bot" / "level_dat_backups"
-
-    result = enable_beta_apis_safely(
-        resolution.level_dat,
-        backup_root=backup_root,
-        world_name=resolution.level_name,
-        backup_keep=5,
-    )
-    print(result.message)
-    if result.backup_path:
-        print(f"backup: {result.backup_path}")
-    return 0 if result.ok else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
