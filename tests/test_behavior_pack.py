@@ -14,27 +14,40 @@ class BehaviorPackTests(unittest.TestCase):
     def test_trident_is_taken_from_inventory(self):
         self.assertIn('getComponent("minecraft:inventory")', self.source)
         self.assertIn('item.typeId === "minecraft:trident"', self.source)
-        self.assertIn("useItemInSlot(slot)", self.source)
+        self.assertIn("container.setItem(slot)", self.source)
 
-    def test_trident_is_never_created_by_script(self):
+    def test_trident_is_never_created_as_an_inventory_item(self):
         self.assertNotIn('new ItemStack("minecraft:trident"', self.source)
         self.assertNotIn("sim.setItem(trident", self.source)
         self.assertNotIn("ItemStack,", self.source)
 
-    def test_view_direction_syncs_all_controller_rotations(self):
+    def test_trident_uses_owned_projectile_component(self):
+        self.assertIn('spawnEntity("minecraft:thrown_trident"', self.source)
+        self.assertIn('getComponent("minecraft:projectile")', self.source)
+        self.assertIn("projectile.owner = sim", self.source)
+        self.assertIn("projectile.shoot({", self.source)
+        self.assertIn("const speed = 2.5", self.source)
+
+    def test_trident_path_no_longer_uses_simulated_player_item_use(self):
+        self.assertNotIn("useItemInSlot(slot)", self.source)
+        self.assertNotIn("stopUsingItem()", self.source)
+
+    def test_trident_failure_rolls_back_inventory_and_projectile(self):
+        self.assertIn("const originalItem = found.item.clone()", self.source)
+        self.assertIn("restoreInventoryItem(found.container, found.slot, originalItem)", self.source)
+        self.assertIn("cleanupProjectile(projectileEntity)", self.source)
+
+    def test_enchanted_tridents_are_rejected_for_now(self):
+        self.assertIn('item.getComponent("minecraft:enchantable")', self.source)
+        self.assertIn("enchanted_trident_unsupported", self.source)
+
+    def test_view_direction_syncs_visual_pose(self):
         self.assertIn("sim.lookAtLocation(target", self.source)
-        self.assertIn("LookDuration?.Instant", self.source)
         self.assertIn("sim.setBodyRotation(rotation.y)", self.source)
         self.assertIn("sim.setRotation(rotation)", self.source)
-        self.assertIn("Math.atan2(-nx, nz)", self.source)
-        self.assertIn("-Math.asin", self.source)
         self.assertIn("req.dx", self.source)
         self.assertIn("req.dy", self.source)
         self.assertIn("req.dz", self.source)
-
-    def test_trident_use_waits_one_tick_after_controller_rotation(self):
-        self.assertIn("Do not start item use in the same tick", self.source)
-        self.assertIn("system.runTimeout(() => {", self.source)
 
 
 if __name__ == "__main__":
