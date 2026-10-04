@@ -225,6 +225,7 @@ class BotPlugin(Plugin):
             "use_failed": f"假人 {name} 无法开始使用三叉戟。",
             "prepare_failed": f"假人 {name} 无法准备三叉戟投掷。",
             "release_failed": f"假人 {name} 未能成功松手投掷三叉戟。",
+            "player_too_close": f"假人 {name} 附近 1 格内有其他玩家，请先离开后再投掷。",
         }
         message = (
             f"假人 {name} 已按你的视角投掷三叉戟。"
