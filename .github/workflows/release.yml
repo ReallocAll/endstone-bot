@@ -36,7 +36,7 @@ jobs:
           python -m pip install build
 
       - name: Run unit tests
-        run: python -m unittest tests.test_settings tests.test_models -v
+        run: python -m unittest tests.test_settings tests.test_models tests.test_bridge -v
 
       - name: Compile Python sources
         run: python -m compileall -q endstone_bot
