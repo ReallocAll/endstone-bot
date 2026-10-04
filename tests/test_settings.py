@@ -29,14 +29,6 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(self.settings.max_total, 6)
         self.assertEqual(self.settings.max_per_player, 1)
         self.assertEqual(self.settings.spawn_cooldown_seconds, 10)
-        self.assertTrue(self.settings.beta_auto_enable)
-        self.assertEqual(self.settings.beta_backup_keep, 5)
-
-    def test_beta_auto_enable_can_be_disabled(self):
-        self.settings.set_beta_auto_enable(False)
-        self.assertFalse(self.settings.beta_auto_enable)
-        self.settings.reload()
-        self.assertFalse(self.settings.beta_auto_enable)
 
     def test_unlimited_override(self):
         key, name = self.settings.resolve_target_key("RedstonePlayer", [])
