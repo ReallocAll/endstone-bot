@@ -15,7 +15,7 @@
 - 玩家可以把自己的当前位置和世界空间视线方向同步给假人；投掷三叉戟时只会扫描并使用假人背包里已经存在的 `minecraft:trident`，不会生成或补充物品，也不自动瞄准、不循环投掷。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
-- 不自动修改 `level.dat`。找不到精确世界目录时 fail closed，不猜测其他世界。
+- 默认在 Endstone `on_load()`、BDS 读取世界之前安全启用 Beta APIs；只从固定 BDS 根目录的 `server.properties -> level-name` 精确定位当前世界，找不到唯一目标时 fail closed，绝不扫描或猜测其他世界。
 
 ## 默认限制
 
@@ -30,6 +30,10 @@
     "enabled": true,
     "interval_ticks": 10,
     "distance": 1.0
+  },
+  "beta_api": {
+    "auto_enable": true,
+    "backup_keep": 5
   }
 }
 ```
@@ -85,6 +89,7 @@
 /bot config maxtotal <count>
 /bot config maxperplayer <count>
 /bot config cooldown <seconds>
+/bot config betaauto <true|false>
 ```
 
 给生电玩家解除全部限制：
@@ -103,9 +108,19 @@
 
 ## Behavior Pack / Beta APIs
 
-插件只根据 `server.level.name` 精确寻找当前世界，自动安装/升级内置 Behavior Pack，并更新 `world_behavior_packs.json`。它**不会自动修改 `level.dat`**。
+SimulatedPlayer 依赖 Beta APIs。默认配置 `beta_api.auto_enable=true`，插件会在 Endstone `on_load()` 阶段、BDS 读取世界之前尝试安全启用：
 
-SimulatedPlayer 依赖 Beta APIs。如果行为包桥接未建立，日志会提示检查完整重启和 Beta APIs。首次安装或 Behavior Pack 版本升级后需要完整重启 BDS。
+- 只检查 `<cwd>/server.properties` 与 `<cwd>/bedrock_server/server.properties` 两种固定布局；
+- 世界名只读取对应 `server.properties` 的 `level-name`，绝不扫描 `worlds/` 猜测；
+- 拒绝符号链接、路径穿越、多个候选世界、NBT 长度头异常、重复字段、错误字段类型；
+- 完整解析修改前后的 little-endian NBT，并验证除 `experiments.gametest`、`experiments_ever_used`、`saved_with_toggled_experiments` 外没有语义变化；
+- 写入前在插件数据目录 `level_dat_backups/<world>/` 创建并校验 SHA-256 备份，默认保留最近 5 份；
+- 使用同目录临时文件、`fsync` 与 `os.replace` 原子替换；写后重新解析验证，失败自动回滚；
+- 世界已经启用时不写文件，也不额外刷日志。
+
+可在 `config.json` 设置 `beta_api.auto_enable=false`，或使用 `/bot config betaauto false` 关闭。命令修改在下一次完整启动时生效。
+
+Behavior Pack 仍根据已经加载的 `server.level.name` 精确寻找当前世界，自动安装/升级并更新 `world_behavior_packs.json`。首次安装或 Behavior Pack 版本升级后仍需要完整重启一次，让 BDS 在启动阶段加载新的 Pack。
 
 ## Bridge protocol 2
 
@@ -120,7 +135,8 @@ SimulatedPlayer 依赖 Beta APIs。如果行为包桥接未建立，日志会提
 ## 数据
 
 - `bots.json`：持久化假人定义、挂机锚点、pitch/yaw 和世界空间视线方向。
-- `config.json`：全局资源限制。
+- `config.json`：全局资源限制、位置守护与 Beta APIs 自动启用设置。
+- `level_dat_backups/<world>/`：自动修改 `level.dat` 前创建的校验备份。
 - `player_limits.json`：玩家级例外。
 
 写入均采用临时文件 + replace。
