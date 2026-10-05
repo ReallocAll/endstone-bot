@@ -151,7 +151,10 @@ function pollDrain(elapsedTicks = 0) {
 }
 
 function beginDrain(releaseToken) {
-    if (drainState) return;
+    if (drainState) {
+        if (releaseToken) drainState.releaseToken = true;
+        return;
+    }
 
     const entries = Array.from(simulatedPlayers.entries());
     drainState = {
