@@ -49,6 +49,7 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn('self._put_inventory_session(fp, session, "BORROWED")', self.source)
         self.assertIn('self._put_inventory_session(fp, session, "PLAYER_CLEARED")', self.source)
         self.assertIn('self._put_inventory_session(fp, session, "BOT_RESTORED")', self.source)
+        self.assertIn('self._put_inventory_session(fp, session, "PLAYER_RESTORED")', self.source)
         self.assertIn("empty_inventory(bot_player.inventory)", self.source)
 
     def test_inventory_lock_blocks_mutating_bot_actions(self):
@@ -76,6 +77,8 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn('"nbt": tag_to_record(item.nbt)', self.journal_source)
         self.assertIn("item.nbt = restored", self.journal_source)
         self.assertIn("os.fsync", self.journal_source)
+        self.assertIn("self._write_sessions(updated)", self.journal_source)
+        self.assertIn("self.sessions = updated", self.journal_source)
 
     def test_bridge_errors_remain_visible(self):
         self.assertIn('self.logger.warning(f"bridge 命令执行失败: {message}")', self.plugin_source)
