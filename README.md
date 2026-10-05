@@ -11,7 +11,7 @@
 - 管理员可以给指定玩家单独提高上限，或一键解除全部限制，适合生电玩家/技术玩家。
 - `/bot` 直接打开玩家 GUI，适合 ClockMenu 只执行一个命令接入。
 - 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
-- 假人管理菜单支持“整理假人背包”：玩家与假人的 36 格主背包通过原生容器逐槽交换，玩家整理完成后再交换回去；玩家原背包会先写入持久化 NBT 事务备份，假人托管期间处于 spectator 且禁止移动/删除/三叉戟，异常状态默认 fail-close 而不是猜测性恢复。
+- 假人管理菜单支持“整理假人背包”：先持久化玩家原 36 格主背包，随后玩家与假人进入 spectator 锁定并通过原生容器逐槽交换；插件再从交换后的玩家背包持久化假人原背包，只有两份完整 NBT 快照都 fsync 成功后才解除玩家 spectator 开放整理。完成后再次逐槽交换回去；假人托管期间禁止移动/删除/三叉戟，异常状态默认 fail-close 而不是猜测性恢复。
 - 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
 - “移动到我这里”负责保存假人的位置和世界空间视线方向；“投掷三叉戟”只使用这个已保存姿态，不会再次把假人传送到操作者身上。三叉戟实现采用与 FlashFakePlayerPack 等同类 Bedrock 假人行为包一致的原生 SimulatedPlayer 路径：假人由长期 GameTest 的 `Test.spawnSimulatedPlayer` 创建，背包内已有三叉戟会临时换到快捷栏 0，执行 `useItemInSlot(0)`，10 tick 后 `stopUsingItem()`。“移动到我这里”会先移动到保存的位置/维度，再以假人头部为起点，沿保存的 `dx/dy/dz` 计算世界绝对目标；由于 Test-bound SimulatedPlayer 的控制器位置参数使用 GameTest 相对坐标，插件会通过 `activeTest.relativeLocation(worldTarget)` 转换后再调用 `lookAtLocation(..., LookDuration.UntilMove)` 同步完整 pitch/yaw。该朝向会保持到假人发生下一次移动；投掷阶段不会再次修改视角。投掷阶段不会再次移动或修改视角，只执行原生 `useItemInSlot(0)` / `stopUsingItem()`。投掷前如果假人当前实际位置 1.0 格欧氏距离内有其他玩家则拒绝。不会生成或补充物品，也不自行构造 projectile。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
@@ -156,7 +156,7 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 - heartbeat 超时后插件真正进入断开状态。
 - 坐标和列表按消息长度分批，避免撞 `/scriptevent` 2048 字符上限。
 - SimulatedPlayer 统一由长生命周期 GameTest 的 `Test.spawnSimulatedPlayer` 创建；GameTest 所需的 1×1×1 空结构由 Script API 在运行时创建并保存到 World，不再打包静态 `.mcstructure`。
-- protocol 3 新增背包托管事务：双方 36 格主背包使用 `Container.swapItems()` 物理交换；交换失败会按已完成槽位反向回滚，回滚失败则保持锁定并要求人工检查。
+- protocol 3 新增背包托管事务：双方 36 格主背包使用 `Container.swapItems()` 物理交换；双份备份未持久化完成前玩家保持 spectator；交换失败会按已完成槽位反向回滚，回滚失败则保持锁定并要求人工检查。
 
 ## 数据
 
