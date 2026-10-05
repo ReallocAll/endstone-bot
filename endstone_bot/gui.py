@@ -95,14 +95,36 @@ class BotGUI:
             ),
         )
         if can_manage:
-            form.add_button("§b移动到我这里\n同步当前位置和视角", on_click=lambda p: self._move_here(p, fp, admin_context))
-            form.add_button("§6投掷三叉戟\n按已保存的位置和视角投掷", on_click=lambda p: self._throw_trident(p, fp, admin_context))
-            form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
+            session = self._plugin.manager.inventory_session(fp)
+            own_session = self._plugin.manager.inventory_session_for_player(player, fp)
+            if session is None:
+                form.add_button(
+                    "§a整理背包\n临时借到你的背包中整理",
+                    on_click=lambda p: self._inventory_start(p, fp, admin_context),
+                )
+                form.add_button("§b移动到我这里\n同步当前位置和视角", on_click=lambda p: self._move_here(p, fp, admin_context))
+                form.add_button("§6投掷三叉戟\n按已保存的位置和视角投掷", on_click=lambda p: self._throw_trident(p, fp, admin_context))
+                form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
+            elif own_session is not None and str(own_session.get("state", "")) == "BORROWED":
+                form.add_button(
+                    "§a完成背包整理\n归还假人背包并恢复你的原背包",
+                    on_click=lambda p: self._inventory_done(p, fp, admin_context),
+                )
         form.add_button(
             "返回",
             on_click=(lambda p: self.open_admin_bots(p)) if admin_context else (lambda p: self.open_my_bots(p)),
         )
         player.send_form(form)
+
+    def _inventory_start(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+        ok, message = self._plugin.manager.begin_inventory_edit(player, fp)
+        player.send_message(("§a" if ok else "§c") + message)
+        self.open_bot(player, fp, admin_context)
+
+    def _inventory_done(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+        ok, message = self._plugin.manager.finish_inventory_edit(player, fp)
+        player.send_message(("§a" if ok else "§c") + message)
+        self.open_bot(player, fp, admin_context)
 
     def _move_here(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
         ok, message = self._plugin.manager.move_here(player, fp)
