@@ -411,7 +411,7 @@ function doSpawn(req) {
 
     let actualName = "";
     try { actualName = String(sim.name || ""); } catch (_) {}
-    if (actualName && actualName !== name) {
+    if (actualName !== name) {
         try { sim.disconnect(); } catch (_) {}
         reply("bot:error", {
             n: name,
