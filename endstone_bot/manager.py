@@ -104,7 +104,14 @@ class FakeBotManager:
         return key, uuid, name
 
     def _online_player_named(self, name: str) -> Any | None:
-        wanted = str(name or "").lower()
+        wanted_raw = str(name or "")
+        try:
+            direct = self._plugin.server.get_player(wanted_raw)
+            if direct is not None:
+                return direct
+        except Exception:
+            pass
+        wanted = wanted_raw.lower()
         for player in self._plugin.server.online_players:
             try:
                 if str(player.name).lower() == wanted:
