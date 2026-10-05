@@ -169,11 +169,15 @@ class FakeBotManager:
         if bot_player is None or not hasattr(bot_player, "inventory"):
             return False, "假人当前不在线，无法安全读取背包。"
 
+        session: dict[str, Any] | None = None
+        remove_sent = False
+        player_touched = False
         try:
             player_backup = snapshot_inventory(sender.inventory)
             bot_backup = snapshot_inventory(bot_player.inventory)
             if int(player_backup["size"]) != int(bot_backup["size"]):
                 return False, "玩家与假人的背包槽位数量不一致，已拒绝整理。"
+
             session = {
                 "bot_id": fp.id,
                 "bot_name": fp.name,
@@ -194,62 +198,70 @@ class FakeBotManager:
                 raise RuntimeError("failed to clear bot inventory")
             self._put_inventory_session(fp, session, "BOT_CLEARED")
 
-            if not self._bridge.send_bridge("remove", {"n": fp.name}):
-                raise RuntimeError("failed to dispatch bot remove")
-            self._put_inventory_session(fp, session, "WAIT_REMOVE")
-            return True, f"正在锁定 {fp.name} 并准备背包，完成后会自动提示你开始整理。"
+            remove_sent = self._bridge.send_bridge("remove", {"n": fp.name})
+            if not remove_sent:
+                # Nothing has touched the player's inventory, so this rollback
+                # cannot duplicate the bot's items.
+                restore_inventory(bot_player.inventory, bot_backup)
+                if inventory_digest(bot_player.inventory) != session["bot_digest"]:
+                    raise RuntimeError("bot rollback verification failed after remove dispatch failure")
+                self.inventory_journal.remove(fp.id)
+                return False, "无法锁定假人，背包已原样恢复。"
+
+            # The bot is already empty before its disconnect request is sent.
+            # From this point the only live copy of the bot inventory is handed
+            # to the player; the journal copy is recovery data, never gameplay state.
+            player_touched = True
+            restore_inventory(sender.inventory, bot_backup)
+            if inventory_digest(sender.inventory) != session["bot_digest"]:
+                raise RuntimeError("borrowed inventory verification failed")
+            self._put_inventory_session(fp, session, "BORROWED")
+            fp.sim_spawn_confirmed = False
+            fp.sim_has_position = False
+            fp.sim_last_seen_at = 0.0
+            return True, (
+                f"{fp.name} 已锁定并正在下线。现在你的背包就是假人背包；"
+                "整理完成并选中希望假人手持的热栏槽后，点击“完成背包整理”。"
+            )
         except Exception as exc:
             self._logger.error(f"开始背包整理失败 [{fp.name}]: {exc}")
-            # At this point the player's inventory has not been modified yet.
-            try:
-                bot_player = self._online_player_named(fp.name)
-                if bot_player is not None and hasattr(bot_player, "inventory"):
-                    restore_inventory(bot_player.inventory, session["bot_backup"])
-                    if inventory_digest(bot_player.inventory) == session["bot_digest"]:
-                        self.inventory_journal.remove(fp.id)
-            except Exception as rollback_exc:
-                self._logger.error(f"回滚假人背包失败 [{fp.name}]，事务保持锁定: {rollback_exc}")
-            return False, "无法安全进入背包整理模式；事务已 fail-close。"
+            if session is None:
+                return False, "无法创建背包事务，未修改任何背包。"
+
+            rollback_kind = "ROLLBACK_FULL" if player_touched else "ROLLBACK_BOT_ONLY"
+            # If the remove request was accepted, wait for the removal callback
+            # before respawning; otherwise the callback could disconnect a bot
+            # after its inventory had already been restored.
+            bot_online = self._online_player_named(fp.name) is not None
+            if remove_sent and bot_online:
+                self._put_inventory_session(fp, session, rollback_kind + "_WAIT_REMOVE")
+            else:
+                self._put_inventory_session(fp, session, rollback_kind + "_WAIT_SPAWN")
+                if self._bridge.active:
+                    self.spawn(fp, force=True)
+            return False, "进入背包整理模式失败；事务已锁定并正在安全回滚。"
 
     def on_bot_removed(self, name: str) -> None:
         fp = self.get_by_name(name)
         if fp is None:
             return
-        session = self.inventory_session(fp)
-        if session is None or str(session.get("state")) != "WAIT_REMOVE":
-            return
         fp.sim_spawn_confirmed = False
         fp.sim_has_position = False
         fp.sim_last_seen_at = 0.0
 
-        player = self._online_player_named(str(session.get("player_name", "")))
-        if player is None or not self._session_matches_player(session, player):
-            self._put_inventory_session(fp, session, "ROLLBACK_WAIT_SPAWN")
-            self.spawn(fp, force=True)
+        session = self.inventory_session(fp)
+        if session is None:
             return
-        try:
-            if inventory_digest(player.inventory) != str(session.get("player_digest")):
-                self._put_inventory_session(fp, session, "ROLLBACK_WAIT_SPAWN")
+        state = str(session.get("state", ""))
+        if state == "ROLLBACK_BOT_ONLY_WAIT_REMOVE":
+            self._put_inventory_session(fp, session, "ROLLBACK_BOT_ONLY_WAIT_SPAWN")
+            if self._bridge.active:
                 self.spawn(fp, force=True)
-                self._notify_session_player(
-                    session,
-                    "你在准备阶段修改了自己的背包，本次整理已取消，正在恢复假人背包。",
-                    error=True,
-                )
-                return
-            restore_inventory(player.inventory, session["bot_backup"])
-            if inventory_digest(player.inventory) != str(session.get("bot_digest")):
-                raise RuntimeError("borrowed inventory verification failed")
-            self._put_inventory_session(fp, session, "BORROWED")
-            self._notify_session_player(
-                session,
-                f"{fp.name} 已下线并锁定。现在你的背包就是假人背包；整理完成后点击“完成背包整理”。",
-            )
-        except Exception as exc:
-            self._logger.error(f"交付假人背包失败 [{fp.name}]: {exc}")
-            self._put_inventory_session(fp, session, "ROLLBACK_WAIT_SPAWN")
-            self.spawn(fp, force=True)
-            self._notify_session_player(session, "背包交付失败，正在自动回滚。", error=True)
+        elif state == "ROLLBACK_FULL_WAIT_REMOVE":
+            self._put_inventory_session(fp, session, "ROLLBACK_FULL_WAIT_SPAWN")
+            if self._bridge.active:
+                self.spawn(fp, force=True)
+
 
     def finish_inventory_edit(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
         session = self.inventory_session(fp)
@@ -279,7 +291,7 @@ class FakeBotManager:
         if bot_player is None or not hasattr(bot_player, "inventory"):
             return
 
-        if state == "ROLLBACK_WAIT_SPAWN":
+        if state == "ROLLBACK_BOT_ONLY_WAIT_SPAWN":
             try:
                 if not bot_player.inventory.is_empty:
                     raise RuntimeError("rollback target bot inventory is not empty")
@@ -290,6 +302,36 @@ class FakeBotManager:
                 self._notify_session_player(session, f"{fp.name} 的原背包已恢复；本次整理已取消。")
             except Exception as exc:
                 self._logger.error(f"恢复假人原背包失败 [{fp.name}]，事务保持锁定: {exc}")
+            return
+
+        if state == "ROLLBACK_FULL_WAIT_SPAWN":
+            player = self._online_player_named(str(session.get("player_name", "")))
+            if player is None or not self._session_matches_player(session, player):
+                self._bridge.send_bridge("remove", {"n": fp.name})
+                self._put_inventory_session(fp, session, "ROLLBACK_FULL_WAIT_PLAYER")
+                return
+            try:
+                if not bot_player.inventory.is_empty:
+                    raise RuntimeError("full rollback target bot inventory is not empty")
+
+                # Remove any partially delivered bot inventory from the player
+                # before materializing the bot backup again.
+                empty_inventory(player.inventory)
+                if not player.inventory.is_empty:
+                    raise RuntimeError("failed to clear player during full rollback")
+
+                restore_inventory(bot_player.inventory, session["bot_backup"])
+                if inventory_digest(bot_player.inventory) != str(session.get("bot_digest")):
+                    raise RuntimeError("full rollback bot verification failed")
+
+                restore_inventory(player.inventory, session["player_backup"])
+                if inventory_digest(player.inventory) != str(session.get("player_digest")):
+                    raise RuntimeError("full rollback player verification failed")
+
+                self.inventory_journal.remove(fp.id)
+                self._notify_session_player(session, f"{fp.name} 与你的原背包均已恢复；本次整理已取消。")
+            except Exception as exc:
+                self._logger.error(f"完整回滚背包事务失败 [{fp.name}]，事务保持锁定: {exc}")
             return
 
         if state != "WAIT_SPAWN_FOR_RETURN":
@@ -364,13 +406,13 @@ class FakeBotManager:
             self._logger.error(f"无法读取玩家背包以恢复事务 [{name}]: {exc}")
             return
 
-        if state in {"PREPARED", "BOT_CLEARED", "WAIT_REMOVE"}:
+        if state in {"PREPARED", "BOT_CLEARED"}:
             if current_digest == str(session.get("bot_digest")):
                 self._put_inventory_session(fp, session, "BORROWED")
                 player.send_message(f"§e恢复了 {fp.name} 的未完成背包整理事务；整理完成后请执行归还。")
                 return
             if current_digest == str(session.get("player_digest")):
-                self._put_inventory_session(fp, session, "ROLLBACK_WAIT_SPAWN")
+                self._put_inventory_session(fp, session, "ROLLBACK_BOT_ONLY_WAIT_SPAWN")
                 if self._bridge.active:
                     self.spawn(fp, force=True)
                 player.send_message(f"§e上次 {fp.name} 的整理尚未开始，正在恢复假人原背包。")
@@ -386,7 +428,13 @@ class FakeBotManager:
             player.send_message(f"§e你仍在整理 {fp.name} 的背包；完成后请点击“完成背包整理”。")
             return
 
-        if state == "ROLLBACK_WAIT_SPAWN":
+        if state in {"ROLLBACK_BOT_ONLY_WAIT_SPAWN", "ROLLBACK_FULL_WAIT_SPAWN"}:
+            if self._bridge.active:
+                self.spawn(fp, force=True)
+            return
+
+        if state == "ROLLBACK_FULL_WAIT_PLAYER":
+            self._put_inventory_session(fp, session, "ROLLBACK_FULL_WAIT_SPAWN")
             if self._bridge.active:
                 self.spawn(fp, force=True)
             return
