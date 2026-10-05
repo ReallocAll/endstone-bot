@@ -119,6 +119,12 @@ class FakeBotManager:
     def inventory_locked(self, fp: FakePlayer) -> bool:
         return self.inventory_session(fp) is not None
 
+    def inventory_session_for_player(self, player: Any, fp: FakePlayer) -> dict[str, Any] | None:
+        session = self.inventory_session(fp)
+        if session is None or not self._session_matches_player(session, player):
+            return None
+        return session
+
     def active_inventory_sessions(self) -> int:
         return len(self.inventory_journal.sessions)
 
