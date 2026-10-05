@@ -225,6 +225,8 @@ class BotPlugin(Plugin):
                 session = self.inventory_sessions.for_bot_id(fp.id)
                 if session is not None:
                     session_id = str(session.get("session_id", ""))
+                    state = str(session.get("state", ""))
+                    remote_session = str(data.get("inventory_session", "") or "")
                     if reason == "dead":
                         self.inventory_sessions.set_state(session_id, "manual_review")
                         self.logger.error(
@@ -235,13 +237,28 @@ class BotPlugin(Plugin):
                             session,
                             "§c假人在背包托管期间异常死亡。为防止刷物，事务已锁定，请联系管理员处理。",
                         )
-                    elif str(session.get("state", "")) == "editing":
+                    elif (
+                        state in ("prepared", "editing")
+                        and remote_session == session_id
+                    ):
                         self.inventory_sessions.set_state(session_id, "recovery_pending")
                         self._message_inventory_player(
                             session,
-                            "§e假人连接中断，背包事务已进入安全恢复状态；请不要移动当前背包物品。",
+                            "§e假人连接中断，已确认旧托管对象失效；背包事务进入安全恢复状态。"
+                            "请暂时不要移动当前背包物品。",
                         )
-                if reason != "dead":
+                    else:
+                        self.inventory_sessions.set_state(session_id, "manual_review")
+                        self.logger.error(
+                            f"假人 {fp.name} 在背包事务 state={state} 时异常离线，"
+                            "所有权无法自动证明，已 fail-close。"
+                        )
+                        self._message_inventory_player(
+                            session,
+                            "§c假人在背包事务中异常离线且所有权状态不确定，已锁定，请联系管理员。",
+                        )
+                    fp.sim_spawn_confirmed = False
+                elif reason != "dead":
                     fp.sim_spawn_confirmed = False
                 fp.sim_has_position = False
                 fp.sim_last_seen_at = 0.0
