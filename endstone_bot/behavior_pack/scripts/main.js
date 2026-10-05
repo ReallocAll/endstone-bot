@@ -155,7 +155,7 @@ function orientSim(sim, req) {
 
         try {
             // Standalone SimulatedPlayer controller locations are ordinary
-            // world coordinates, so no Test.relativeLocation conversion exists.
+            // Standalone controller locations are ordinary world coordinates.
             sim.lookAtLocation(
                 target,
                 GameTest.LookDuration?.UntilMove ?? "UntilMove",
@@ -679,7 +679,7 @@ function flushPositions(report) {
 if (!standaloneSimulatedPlayerSupported) {
     console.warn(
         "[EndstoneBot] standalone GameTest.spawnSimulatedPlayer is unavailable; " +
-        "legacy /gametest run fallback is intentionally disabled"
+        "legacy test-bound fallback is intentionally disabled"
     );
 }
 
