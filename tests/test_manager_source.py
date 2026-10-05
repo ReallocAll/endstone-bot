@@ -25,6 +25,10 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn('payload = self._pose_payload(fp)', block)
         self.assertIn("已保存的位置和视角", block)
 
+    def test_plugin_reports_reload_adoption(self):
+        self.assertIn('data.get("adopted")', self.plugin_source)
+        self.assertIn('已重新接管假人 {name}', self.plugin_source)
+
     def test_plugin_registers_decorated_event_handlers(self):
         start = self.plugin_source.index("    def on_enable(")
         end = self.plugin_source.index("\n    def _write_beta_patch_script(", start)
