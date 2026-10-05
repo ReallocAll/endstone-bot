@@ -110,7 +110,7 @@ class BotGUI:
                         on_click=lambda p: self._throw_trident(p, fp),
                     )
                     form.add_button(
-                        "§7下线假人\n保持定义但移出服务器",
+                        "§e下线假人\n§f保持定义但移出服务器",
                         on_click=lambda p: self._set_online(p, fp, False),
                     )
                 else:
