@@ -7,7 +7,7 @@ from typing import Any
 
 from endstone.event import ScriptMessageEvent
 
-BRIDGE_PROTOCOL = 2
+BRIDGE_PROTOCOL = 3
 
 
 class BridgeManager:
@@ -77,6 +77,10 @@ class BridgeManager:
             "remove": "bot:remove",
             "teleport": "bot:teleport",
             "trident": "bot:trident",
+            "inventory_begin": "bot:inventory_begin",
+            "inventory_finish": "bot:inventory_finish",
+            "inventory_recover": "bot:inventory_recover",
+            "inventory_recovery_finalize": "bot:inventory_recovery_finalize",
             "clear": "bot:clear",
         }.get(action)
         if event_id is None:
