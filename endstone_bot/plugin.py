@@ -353,7 +353,13 @@ class BotPlugin(Plugin):
             # The physical swap succeeded but the second durable snapshot failed.
             # Immediately request the inverse swap. Do not allow editing to start.
             self.logger.error(f"备份假人背包失败，正在回滚物理交换: {exc}")
-            self.inventory_sessions.set_state(session_id, "rollback_pending")
+            try:
+                self.inventory_sessions.set_state(session_id, "rollback_pending")
+            except Exception as state_exc:
+                # The journal is copy-on-write, so a failed state write leaves
+                # the durable "preparing" record intact. Physical rollback is
+                # still the safest action and must not depend on another disk write.
+                self.logger.error(f"记录 rollback_pending 失败，仍尝试物理回滚: {state_exc}")
             ok = self.bridge.send_bridge(
                 "inventory_finish",
                 {
@@ -364,7 +370,10 @@ class BotPlugin(Plugin):
                 },
             )
             if not ok:
-                self.inventory_sessions.set_state(session_id, "manual_review")
+                try:
+                    self.inventory_sessions.set_state(session_id, "manual_review")
+                except Exception as state_exc:
+                    self.logger.error(f"记录 manual_review 失败: {state_exc}")
             return
 
         session = self.inventory_sessions.by_session(session_id)
@@ -426,9 +435,10 @@ class BotPlugin(Plugin):
             )
             return
 
-        result = "rolled_back" if previous_state == "rollback_pending" else "completed"
+        rolled_back = bool(data.get("rolled_back", False)) or previous_state == "rollback_pending"
+        result = "rolled_back" if rolled_back else "completed"
         self.inventory_sessions.complete(session_id, result=result)
-        if previous_state == "rollback_pending":
+        if rolled_back:
             player.send_message("§e假人背包备份失败，但双方背包已安全回滚；未进入整理模式。")
         else:
             player.send_message(
