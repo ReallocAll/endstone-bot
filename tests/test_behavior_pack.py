@@ -117,6 +117,7 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("const DRAIN_MIN_TICKS = 5", self.source)
         self.assertIn("const DRAIN_WARN_TICKS = 200", self.source)
         self.assertIn("function beginDrain(releaseToken)", self.source)
+        self.assertIn("if (releaseToken) drainState.releaseToken = true;", self.source)
         self.assertIn("function pollDrain(elapsedTicks = 0)", self.source)
         self.assertIn("world.getAllPlayers()", self.source)
         self.assertIn("simStillAttached(name, sim)", self.source)
