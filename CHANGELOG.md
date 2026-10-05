@@ -5,6 +5,23 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.6.2] - 2026-10-06
+
+### 修复
+
+- 修复 `/reload` 后旧 standalone SimulatedPlayer 仍存活时，新脚本只能反复报告“名字仍被占用”而无法恢复管理的问题
+- 新生成的假人会写入持久实体 tag `endstone_bot_managed`；脚本状态重置后可从 `world.getAllPlayers()` 重新发现并接管
+- 对从 4.6.1 升级留下的未打 tag 假人，已认证的同名 `bot:spawn` 请求可按 SimulatedPlayer 运行时能力识别并一次性迁移接管
+- 运行时识别同时校验 `SimulatedPlayer` 类型或 `disconnect / respawn / useItemInSlot` 专用能力，不会把普通真实玩家当作假人
+- 接管后沿用原对象和原背包，仅同步到已保存位置/视角，不再创建同名新对象
+- Python 端成功接管时输出“已重新接管假人 <name>”便于实机验收
+
+### 维护
+
+- Behavior Pack 提升至 4.3.2
+- 增加 managed-tag 发现、旧假人迁移接管和运行时类型识别回归测试
+
+
 ## [4.6.1] - 2026-10-06
 
 ### 修复
