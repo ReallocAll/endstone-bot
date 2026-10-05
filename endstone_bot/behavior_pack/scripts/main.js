@@ -773,15 +773,16 @@ function startSimulatedPlayerGameTest() {
             return;
         }
 
+        const gameRulesBeforeGameTest = snapshotGameRules();
         try {
-            const gameRulesBeforeGameTest = snapshotGameRules();
             world.getDimension("overworld").runCommand(
                 "execute positioned 15000000 256 15000000 run gametest run endstone_bot:sim_spawner"
             );
-            restoreGameRulesAfterGameTest(gameRulesBeforeGameTest);
         } catch (e) {
             gameTestStartRequested = false;
             console.warn(`[EndstoneBot] failed to start SimulatedPlayer GameTest: ${e}`);
+        } finally {
+            restoreGameRulesAfterGameTest(gameRulesBeforeGameTest);
         }
     });
 }
