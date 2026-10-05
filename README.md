@@ -13,6 +13,7 @@
 - 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
 - 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
 - “移动到我这里”负责保存假人的位置和世界空间视线方向；“投掷三叉戟”只使用这个已保存姿态，不会再次把假人传送到操作者身上。三叉戟实现采用与 FlashFakePlayerPack 等同类 Bedrock 假人行为包一致的原生 SimulatedPlayer 路径：假人由长期 GameTest 的 `Test.spawnSimulatedPlayer` 创建，背包内已有三叉戟会临时换到快捷栏 0，执行 `useItemInSlot(0)`，10 tick 后 `stopUsingItem()`。“移动到我这里”会先移动到保存的位置/维度，再以假人头部为起点，沿保存的 `dx/dy/dz` 计算世界绝对目标；由于 Test-bound SimulatedPlayer 的控制器位置参数使用 GameTest 相对坐标，插件会通过 `activeTest.relativeLocation(worldTarget)` 转换后再调用 `lookAtLocation(..., LookDuration.UntilMove)` 同步完整 pitch/yaw。该朝向会保持到假人发生下一次移动；投掷阶段不会再次修改视角。投掷阶段不会再次移动或修改视角，只执行原生 `useItemInSlot(0)` / `stopUsingItem()`。投掷前如果假人当前实际位置 1.0 格欧氏距离内有其他玩家则拒绝。不会生成或补充物品，也不自行构造 projectile。
+- 假人管理菜单新增“整理背包”。开始前插件会把玩家和假人的完整 ItemStack/NBT 快照写入事务日志，然后清空并下线假人，把假人背包临时交给玩家整理；完成后将整理结果归还假人，并恢复玩家原背包。整理时当前选中的快捷栏槽会成为假人的主手槽。整个过程使用持久化事务状态和 digest 校验，任何歧义都会 fail-close，而不是复制物品。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
 - 插件不会在运行中的服务器里自动修改 `level.dat`。它会在 `plugins/bot/` 生成一个明确的离线补丁脚本，停服后用当前 Python 解释器执行即可启用 Beta APIs。
@@ -63,6 +64,8 @@
 /bot remove <name>
 /bot tp <name>
 /bot trident <name>
+/bot inventory <name> start
+/bot inventory <name> done
 ```
 
 管理员/控制台：

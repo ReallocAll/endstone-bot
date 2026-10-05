@@ -34,6 +34,7 @@ class BotPlugin(Plugin):
                 "/bot",
                 "/bot (gui|list|status|admin|removeall)<action: BotSimpleAction>",
                 "/bot (spawn|remove|tp|trident)<action: BotNamedAction> <name: str>",
+                "/bot (inventory)<action: BotInventoryAction> <name: str> (start|done)<mode: BotInventoryMode>",
                 "/bot (createat)<action: BotCreateAtAction> <name: str> <owner: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotDimension>",
                 "/bot (moveat)<action: BotMoveAtAction> <name: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotMoveDimension>",
                 "/bot (limit)<action: BotLimitAction> <player: str> (show|unlimited|default)<mode: BotLimitSimpleMode>",
@@ -157,6 +158,7 @@ class BotPlugin(Plugin):
                 changed = True
         if changed:
             self.manager.save()
+        self.manager.recover_inventory_for_player(player)
 
     @event_handler
     def on_script_message(self, event: ScriptMessageEvent) -> None:
@@ -171,6 +173,7 @@ class BotPlugin(Plugin):
         if msg_id == "bot:hello_ack":
             self._list_names.clear()
             self.bridge.request_list()
+            self.manager.recover_online_inventory_sessions()
             return
         if msg_id in ("bot:pong", "bot:heartbeat"):
             return
@@ -183,6 +186,9 @@ class BotPlugin(Plugin):
             return
         if msg_id == "bot:trident_result":
             self._handle_trident_result(data)
+            return
+        if msg_id == "bot:removed":
+            self.manager.on_bot_removed(str(data.get("n", "")))
             return
         if msg_id == "bot:lost":
             fp = self.manager.get_by_name(str(data.get("n", "")))
@@ -322,6 +328,22 @@ class BotPlugin(Plugin):
             ok, message = self.manager.throw_trident_here(sender, fp)
             self._send_result(sender, ok, message)
             return True
+        if action == "inventory":
+            if len(args) < 3:
+                return True
+            fp = self.manager.get_by_name(str(args[1]))
+            if fp is None:
+                self._send_error(sender, "假人不存在。")
+                return True
+            mode = str(args[2]).lower()
+            if mode == "start":
+                ok, message = self.manager.begin_inventory_edit(sender, fp)
+            elif mode == "done":
+                ok, message = self.manager.finish_inventory_edit(sender, fp)
+            else:
+                return True
+            self._send_result(sender, ok, message)
+            return True
         if action == "createat":
             return self._cmd_create_at(sender, args)
         if action == "moveat":
@@ -351,6 +373,7 @@ class BotPlugin(Plugin):
             f"假人：{len(self.manager.bots)} / {self.settings.max_total}\n"
             f"普通玩家默认：{self.settings.max_per_player} 个\n"
             f"创建冷却：{self.settings.spawn_cooldown_seconds}s\n"
+            f"背包事务：{self.manager.active_inventory_sessions()}\n"
             f"位置守护：{'开启' if self.settings.guard_enabled else '关闭'}"
         )
 
@@ -406,6 +429,9 @@ class BotPlugin(Plugin):
 
     def _cmd_remove_all(self, sender: CommandSender) -> bool:
         if not self._require_admin(sender):
+            return True
+        if self.manager.active_inventory_sessions() > 0:
+            self._send_error(sender, "存在未完成的假人背包整理事务，不能执行 removeall。")
             return True
         count = len(self.manager.bots)
         self.manager.clear_remote()

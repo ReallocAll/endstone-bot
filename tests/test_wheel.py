@@ -6,13 +6,14 @@ import unittest
 
 class WheelTests(unittest.TestCase):
     def test_release_entry_point_and_payload(self):
-        wheels = list(Path("dist").glob("endstone_bot-4.3.9-*.whl"))
+        wheels = list(Path("dist").glob("endstone_bot-4.4.0-*.whl"))
         self.assertEqual(len(wheels), 1)
         with zipfile.ZipFile(wheels[0]) as zf:
             names = set(zf.namelist())
             for path in (
                 "endstone_bot/plugin.py",
                 "endstone_bot/manager.py",
+                "endstone_bot/inventory_journal.py",
                 "endstone_bot/settings.py",
                 "endstone_bot/bridge.py",
                 "endstone_bot/gui.py",

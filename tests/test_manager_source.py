@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "endstone_bot" / "manager.py"
 PLUGIN = ROOT / "endstone_bot" / "plugin.py"
+JOURNAL = ROOT / "endstone_bot" / "inventory_journal.py"
 
 
 class ManagerSourceTests(unittest.TestCase):
@@ -12,6 +13,7 @@ class ManagerSourceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source = MANAGER.read_text(encoding="utf-8")
         cls.plugin_source = PLUGIN.read_text(encoding="utf-8")
+        cls.journal_source = JOURNAL.read_text(encoding="utf-8")
 
     def test_trident_throw_uses_saved_pose_only(self):
         start = self.source.index("    def throw_trident_here(")
@@ -39,6 +41,44 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn("on_message=lambda _message: None", self.plugin_source)
         self.assertIn("on_error=self._on_bridge_command_error", self.plugin_source)
         self.assertIn('getattr(self, "_bridge_command_sender", self.server.command_sender)', self.plugin_source)
+
+    def test_inventory_borrow_is_exclusive_and_journaled(self):
+        self.assertIn("InventoryJournal", self.source)
+        self.assertIn('self._put_inventory_session(fp, session, "BOT_CLEARED")', self.source)
+        self.assertIn('self._bridge.send_bridge("remove", {"n": fp.name})', self.source)
+        self.assertIn('self._put_inventory_session(fp, session, "BORROWED")', self.source)
+        self.assertIn('self._put_inventory_session(fp, session, "PLAYER_CLEARED")', self.source)
+        self.assertIn('self._put_inventory_session(fp, session, "BOT_RESTORED")', self.source)
+        self.assertIn('self._put_inventory_session(fp, session, "PLAYER_RESTORED")', self.source)
+        self.assertIn("empty_inventory(bot_player.inventory)", self.source)
+
+    def test_inventory_lock_blocks_mutating_bot_actions(self):
+        for method in ("move_here", "throw_trident_here", "teleport_to", "remove"):
+            start = self.source.index(f"    def {method}(")
+            next_def = self.source.find("\n    def ", start + 5)
+            block = self.source[start:] if next_def < 0 else self.source[start:next_def]
+            self.assertIn("inventory_locked", block, method)
+
+    def test_inventory_backup_preserves_typed_nbt(self):
+        for token in (
+            "ByteTag",
+            "ShortTag",
+            "IntTag",
+            "LongTag",
+            "FloatTag",
+            "DoubleTag",
+            "StringTag",
+            "ByteArrayTag",
+            "IntArrayTag",
+            "ListTag",
+            "CompoundTag",
+        ):
+            self.assertIn(token, self.journal_source)
+        self.assertIn('"nbt": tag_to_record(item.nbt)', self.journal_source)
+        self.assertIn("item.nbt = restored", self.journal_source)
+        self.assertIn("os.fsync", self.journal_source)
+        self.assertIn("self._write_sessions(updated)", self.journal_source)
+        self.assertIn("self.sessions = updated", self.journal_source)
 
     def test_bridge_errors_remain_visible(self):
         self.assertIn('self.logger.warning(f"bridge 命令执行失败: {message}")', self.plugin_source)
