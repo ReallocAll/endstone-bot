@@ -54,8 +54,6 @@ class BotGUI:
                 return
             ok, message = self._plugin.manager.create_for_player(p, name)
             p.send_message(("§a" if ok else "§c") + message)
-            if ok:
-                self.open_my_bots(p)
 
         form.on_submit = submit
         player.send_form(form)
@@ -98,17 +96,33 @@ class BotGUI:
             session = self._plugin.manager.inventory_session(fp)
             own_session = self._plugin.manager.inventory_session_for_player(player, fp)
             if session is None:
-                form.add_button(
-                    "§a整理背包\n临时借到你的背包中整理",
-                    on_click=lambda p: self._inventory_start(p, fp, admin_context),
-                )
-                form.add_button("§b移动到我这里\n同步当前位置和视角", on_click=lambda p: self._move_here(p, fp, admin_context))
-                form.add_button("§6投掷三叉戟\n按已保存的位置和视角投掷", on_click=lambda p: self._throw_trident(p, fp, admin_context))
+                if fp.desired_online:
+                    form.add_button(
+                        "§a整理背包\n临时借到你的背包中整理",
+                        on_click=lambda p: self._inventory_start(p, fp),
+                    )
+                    form.add_button(
+                        "§b移动到我这里\n同步当前位置和视角",
+                        on_click=lambda p: self._move_here(p, fp),
+                    )
+                    form.add_button(
+                        "§6投掷三叉戟\n按已保存的位置和视角投掷",
+                        on_click=lambda p: self._throw_trident(p, fp),
+                    )
+                    form.add_button(
+                        "§7下线假人\n保持定义但移出服务器",
+                        on_click=lambda p: self._set_online(p, fp, False),
+                    )
+                else:
+                    form.add_button(
+                        "§a上线假人\n按保存位置重新生成",
+                        on_click=lambda p: self._set_online(p, fp, True),
+                    )
                 form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
             elif own_session is not None and str(own_session.get("state", "")) == "BORROWED":
                 form.add_button(
                     "§a完成背包整理\n归还假人背包并恢复你的原背包",
-                    on_click=lambda p: self._inventory_done(p, fp, admin_context),
+                    on_click=lambda p: self._inventory_done(p, fp),
                 )
         form.add_button(
             "返回",
@@ -116,25 +130,25 @@ class BotGUI:
         )
         player.send_form(form)
 
-    def _inventory_start(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+    def _inventory_start(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.begin_inventory_edit(player, fp)
         player.send_message(("§a" if ok else "§c") + message)
-        self.open_bot(player, fp, admin_context)
 
-    def _inventory_done(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+    def _inventory_done(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.finish_inventory_edit(player, fp)
         player.send_message(("§a" if ok else "§c") + message)
-        self.open_bot(player, fp, admin_context)
 
-    def _move_here(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+    def _move_here(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.move_here(player, fp)
         player.send_message(("§a" if ok else "§c") + message)
-        self.open_bot(player, fp, admin_context)
 
-    def _throw_trident(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
+    def _throw_trident(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.throw_trident_here(player, fp)
         player.send_message(("§a" if ok else "§c") + message)
-        self.open_bot(player, fp, admin_context)
+
+    def _set_online(self, player: Any, fp: FakePlayer, online: bool) -> None:
+        ok, message = self._plugin.manager.set_online(player, fp, online)
+        player.send_message(("§a" if ok else "§c") + message)
 
     def _confirm_remove(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
         form = MessageForm(
@@ -148,10 +162,6 @@ class BotGUI:
             if button == 0:
                 ok, message = self._plugin.manager.remove(p, fp)
                 p.send_message(("§a" if ok else "§c") + message)
-                if admin_context:
-                    self.open_admin_bots(p)
-                else:
-                    self.open_my_bots(p)
             else:
                 self.open_bot(p, fp, admin_context)
 
