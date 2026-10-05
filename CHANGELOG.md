@@ -5,6 +5,27 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.6.0] - 2026-10-05
+
+### 重构
+
+- SimulatedPlayer 生命周期改用模块级 standalone `GameTest.spawnSimulatedPlayer(DimensionLocation, name, GameMode.Survival)`
+- 删除长期 `GameTest.register` / `/gametest run` / GameTest 空结构 / `activeTest` / pending spawn 队列
+- 视角同步直接使用世界坐标调用 `lookAtLocation`，删除 `Test.relativeLocation` 转换
+- 删除 4.5.3 的 gamerule 快照/恢复补偿逻辑；根因消除后不再触碰任何 gamerule
+
+### 安全
+
+- 行为包握手新增 standalone capability；插件仅在 capability=true 时启用 bridge
+- 不支持 standalone API 时 fail-close，不回退旧 Test-bound GameTest 路径
+- Behavior Pack 提升至 4.3.0，最低引擎版本提升至 1.26.50
+
+### 测试
+
+- 回归测试明确禁止 `GameTest.register`、`/gametest run`、结构创建、`activeTest` 和 gamerule 补偿重新进入生产代码
+- 增加 standalone capability 握手与 fail-close 测试
+
+
 ## [4.5.3] - 2026-10-05
 
 ### 修复
