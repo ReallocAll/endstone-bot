@@ -89,6 +89,9 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn('return "手动下线"', self.source)
         self.assertIn('"/bot (online|offline)<action: BotOnlineAction> <name: str>"', self.plugin_source)
 
+    def test_gui_never_uses_dark_gray_color_code(self):
+        self.assertNotIn("§7", self.gui_source)
+
     def test_bot_action_callbacks_do_not_reopen_management_gui(self):
         for method in ("_inventory_start", "_inventory_done", "_move_here", "_throw_trident", "_set_online"):
             start = self.gui_source.index(f"    def {method}(")
