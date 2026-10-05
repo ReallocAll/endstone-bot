@@ -19,6 +19,53 @@ let bridgeToken = "";
 let activeTest = null;
 let gameTestStartRequested = false;
 
+function snapshotGameRules() {
+    const snapshot = {};
+    try {
+        for (const rule in world.gameRules) {
+            const value = world.gameRules[rule];
+            if (
+                typeof value === "boolean" ||
+                typeof value === "number" ||
+                typeof value === "string"
+            ) {
+                snapshot[rule] = value;
+            }
+        }
+    } catch (e) {
+        console.warn(`[EndstoneBot] failed to snapshot gamerules before GameTest: ${e}`);
+    }
+    return snapshot;
+}
+
+function restoreGameRulesAfterGameTest(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") return;
+    system.runTimeout(() => {
+        const restored = [];
+        for (const [rule, wanted] of Object.entries(snapshot)) {
+            try {
+                if (world.gameRules[rule] !== wanted) {
+                    world.gameRules[rule] = wanted;
+                    if (world.gameRules[rule] === wanted) {
+                        restored.push(`${rule}=${String(wanted)}`);
+                    } else {
+                        console.warn(
+                            `[EndstoneBot] failed to restore gamerule ${rule}: expected=${String(wanted)} actual=${String(world.gameRules[rule])}`
+                        );
+                    }
+                }
+            } catch (e) {
+                console.warn(`[EndstoneBot] failed to restore gamerule ${rule}: ${e}`);
+            }
+        }
+        if (restored.length > 0) {
+            console.warn(
+                `[EndstoneBot] GameTest changed gamerules; restored: ${restored.join(", ")}`
+            );
+        }
+    }, 2);
+}
+
 const simulatedPlayers = new Map();
 const pendingSpawns = [];
 const tridentBusy = new Set();
@@ -727,9 +774,11 @@ function startSimulatedPlayerGameTest() {
         }
 
         try {
+            const gameRulesBeforeGameTest = snapshotGameRules();
             world.getDimension("overworld").runCommand(
                 "execute positioned 15000000 256 15000000 run gametest run endstone_bot:sim_spawner"
             );
+            restoreGameRulesAfterGameTest(gameRulesBeforeGameTest);
         } catch (e) {
             gameTestStartRequested = false;
             console.warn(`[EndstoneBot] failed to start SimulatedPlayer GameTest: ${e}`);
