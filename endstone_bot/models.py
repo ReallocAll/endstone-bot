@@ -49,6 +49,7 @@ class FakePlayer:
     pitch: float
     yaw: float
     created: str
+    desired_online: bool = True
     view_x: float = 0.0
     view_y: float = 0.0
     view_z: float = 0.0
@@ -71,6 +72,7 @@ class FakePlayer:
             "rotation": [round(self.pitch, 2), round(self.yaw, 2)],
             "viewDirection": [round(self.view_x, 6), round(self.view_y, 6), round(self.view_z, 6)],
             "created": self.created,
+            "desiredOnline": bool(self.desired_online),
             "type": "simulated",
         }
 
@@ -97,6 +99,7 @@ class FakePlayer:
             pitch=float(rot[0]),
             yaw=float(rot[1]),
             created=str(data.get("created", "")) or format_date_time_beijing(),
+            desired_online=bool(data.get("desiredOnline", True)),
             view_x=float(view[0]),
             view_y=float(view[1]),
             view_z=float(view[2]),
