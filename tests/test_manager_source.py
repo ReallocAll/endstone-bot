@@ -92,6 +92,14 @@ class ManagerSourceTests(unittest.TestCase):
     def test_gui_never_uses_dark_gray_color_code(self):
         self.assertNotIn("§7", self.gui_source)
 
+    def test_inventory_guidance_uses_player_language(self):
+        self.assertIn("使用 /bot 重新打开假人菜单", self.source)
+        self.assertIn("盔甲和副手不会同步", self.source)
+        self.assertIn("希望假人拿着的物品拿在手上", self.source)
+        self.assertNotIn("热栏槽", self.source)
+        self.assertNotIn("主手槽", self.source)
+        self.assertIn("仅主背包，不含盔甲和副手", self.gui_source)
+
     def test_bot_action_callbacks_do_not_reopen_management_gui(self):
         for method in ("_inventory_start", "_inventory_done", "_move_here", "_throw_trident", "_set_online"):
             start = self.gui_source.index(f"    def {method}(")
