@@ -102,9 +102,12 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("for (let index = completed.length - 1; index >= 0; index--)", self.source)
         self.assertIn("inventory swap failed and rollback failed", self.source)
 
-    def test_inventory_edit_locks_bot_in_spectator_and_restores_gamemode(self):
-        self.assertIn("sim.setGameMode(gameModeValue(\"spectator\"))", self.source)
-        self.assertIn("unlockInventoryBot(sim, lease.gameMode)", self.source)
+    def test_inventory_edit_locks_both_participants_until_dual_backup_ready(self):
+        self.assertIn('gameMode = lockInventoryBot(sim)', self.source)
+        self.assertIn('playerGameMode = lockInventoryBot(player)', self.source)
+        self.assertIn("function doInventoryReady(req)", self.source)
+        self.assertIn("if (!lease.ready && !rollbackRequest)", self.source)
+        self.assertIn("unlockInventoryBot(player, lease.playerGameMode)", self.source)
         self.assertIn("inventoryLeases", self.source)
         self.assertIn("inventory_custody", self.source)
 
@@ -128,6 +131,7 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("const PROTOCOL = 3;", self.source)
         for event in (
             "bot:inventory_begin",
+            "bot:inventory_ready",
             "bot:inventory_finish",
             "bot:inventory_recover",
             "bot:inventory_recovery_finalize",
