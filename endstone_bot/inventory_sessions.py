@@ -105,8 +105,6 @@ def _deserialize_item(raw: Any) -> ItemStack | None:
     try:
         item = ItemStack(str(raw["type"]), int(raw["amount"]), int(raw.get("data", 0)))
         item.nbt = _decode_tag(raw["nbt"])
-        item.amount = int(raw["amount"])
-        item.data = int(raw.get("data", 0))
         return item
     except Exception as exc:
         raise InventorySnapshotError(f"failed to deserialize ItemStack: {exc}") from exc
