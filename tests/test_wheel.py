@@ -13,6 +13,7 @@ class WheelTests(unittest.TestCase):
             for path in (
                 "endstone_bot/plugin.py",
                 "endstone_bot/manager.py",
+                "endstone_bot/inventory_journal.py",
                 "endstone_bot/settings.py",
                 "endstone_bot/bridge.py",
                 "endstone_bot/gui.py",
