@@ -125,7 +125,7 @@ class FakeBotManager:
                 return True, f"正在将整理后的背包归还 {fp.name}，并恢复你的原背包。"
             if state == "recovery_pending":
                 return False, "检测到上次背包整理未正常结束，正在等待安全恢复。"
-            if state in ("preparing", "finishing", "recovery_storing", "recovery_restoring"):
+            if state in ("preparing", "prepared", "finishing", "recovery_storing", "recovery_restoring"):
                 return False, "背包事务正在处理中，请稍后。"
             return False, f"背包事务处于保护状态：{state or 'unknown'}。"
 
