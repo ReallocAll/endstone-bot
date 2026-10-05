@@ -408,6 +408,11 @@ class FakeBotManager:
         return True, f"已删除假人 {fp.name}。"
 
     def remove_by_admin(self, fp: FakePlayer) -> None:
+        if self.inventory_locked(fp):
+            self._logger.warning(
+                f"拒绝删除背包托管中的假人 {fp.name}；请先完成或恢复背包事务。"
+            )
+            return
         self._bridge.send_bridge("remove", {"n": fp.name})
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
