@@ -341,6 +341,27 @@ class FakeBotManager:
                 self._logger.error(f"完整回滚背包事务失败 [{fp.name}]，事务保持锁定: {exc}")
             return
 
+        if state == "PLAYER_RESTORED":
+            player = self._online_player_named(str(session.get("player_name", "")))
+            if player is None or not self._session_matches_player(session, player):
+                self._bridge.send_bridge("remove", {"n": fp.name})
+                return
+            try:
+                if inventory_digest(player.inventory) != str(session.get("player_digest")):
+                    raise RuntimeError("player inventory changed after restoration")
+                if bot_player.inventory.is_empty:
+                    edited_bot = session.get("edited_bot")
+                    if not isinstance(edited_bot, dict):
+                        raise RuntimeError("missing edited bot snapshot")
+                    restore_inventory(bot_player.inventory, edited_bot)
+                if inventory_digest(bot_player.inventory) != str(session.get("edited_bot_digest")):
+                    raise RuntimeError("player-restored bot verification failed")
+                self.inventory_journal.remove(fp.id)
+                self._notify_session_player(session, f"{fp.name} 的背包事务已完成恢复。")
+            except Exception as exc:
+                self._logger.error(f"完成 PLAYER_RESTORED 恢复失败 [{fp.name}]: {exc}")
+            return
+
         if state == "PLAYER_CLEARED":
             try:
                 if not bot_player.inventory.is_empty:
@@ -360,6 +381,7 @@ class FakeBotManager:
                     restore_inventory(player.inventory, session["player_backup"])
                     if inventory_digest(player.inventory) != str(session.get("player_digest")):
                         raise RuntimeError("recovered player inventory verification failed")
+                    self._put_inventory_session(fp, session, "PLAYER_RESTORED")
                     self.inventory_journal.remove(fp.id)
                     self._notify_session_player(
                         session,
@@ -401,6 +423,7 @@ class FakeBotManager:
             restore_inventory(player.inventory, session["player_backup"])
             if inventory_digest(player.inventory) != str(session.get("player_digest")):
                 raise RuntimeError("player inventory restoration verification failed")
+            self._put_inventory_session(fp, session, "PLAYER_RESTORED")
 
             self.inventory_journal.remove(fp.id)
             self._notify_session_player(
@@ -474,18 +497,43 @@ class FakeBotManager:
                 self.spawn(fp, force=True)
             return
 
-        if state == "BOT_RESTORED":
-            if not player.inventory.is_empty:
-                player.send_message("§c恢复玩家原背包前检测到当前背包非空，已 fail-close，请联系管理员。")
+        if state in {"BOT_RESTORED", "PLAYER_RESTORED"}:
+            if current_digest == str(session.get("player_digest")):
+                if state != "PLAYER_RESTORED":
+                    self._put_inventory_session(fp, session, "PLAYER_RESTORED")
+                    session["state"] = "PLAYER_RESTORED"
+            elif state == "BOT_RESTORED" and player.inventory.is_empty:
+                try:
+                    restore_inventory(player.inventory, session["player_backup"])
+                    if inventory_digest(player.inventory) != str(session.get("player_digest")):
+                        raise RuntimeError("player recovery verification failed")
+                    self._put_inventory_session(fp, session, "PLAYER_RESTORED")
+                    session["state"] = "PLAYER_RESTORED"
+                except Exception as exc:
+                    self._logger.error(f"恢复玩家原背包失败 [{name}]: {exc}")
+                    return
+            else:
+                player.send_message("§c已恢复阶段的玩家背包与事务快照不匹配，已 fail-close。")
                 return
-            try:
-                restore_inventory(player.inventory, session["player_backup"])
-                if inventory_digest(player.inventory) != str(session.get("player_digest")):
-                    raise RuntimeError("player recovery verification failed")
-                self.inventory_journal.remove(fp.id)
-                player.send_message(f"§a已恢复你在整理 {fp.name} 前的原背包。")
-            except Exception as exc:
-                self._logger.error(f"恢复玩家原背包失败 [{name}]: {exc}")
+
+            bot_player = self._online_player_named(fp.name)
+            if bot_player is not None and hasattr(bot_player, "inventory"):
+                try:
+                    if inventory_digest(bot_player.inventory) == str(session.get("edited_bot_digest")):
+                        self.inventory_journal.remove(fp.id)
+                        player.send_message(f"§a{fp.name} 与你的背包事务已恢复完成。")
+                        return
+                    if not bot_player.inventory.is_empty:
+                        player.send_message("§c假人背包与恢复快照不匹配，已 fail-close。")
+                        return
+                    self._complete_spawned_inventory_session(fp)
+                    return
+                except Exception as exc:
+                    self._logger.error(f"验证已恢复假人背包失败 [{fp.name}]: {exc}")
+                    return
+
+            if self._bridge.active:
+                self.spawn(fp, force=True)
             return
 
         if state in {"WAIT_SPAWN_FOR_RETURN", "RETURNING_PREPARED", "PLAYER_CLEARED"}:
