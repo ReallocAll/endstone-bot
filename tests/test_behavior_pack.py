@@ -121,6 +121,8 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("function pollDrain(elapsedTicks = 0)", self.source)
         self.assertIn("world.getAllPlayers()", self.source)
         self.assertIn("simStillAttached(name, sim)", self.source)
+        self.assertIn("if (!bridgeToken || simulatedPlayers.size === 0 || drainState) return;", self.source)
+        self.assertIn("if (draining) {", self.source)
         self.assertIn('reply("bot:shutdown_ack"', self.source)
         self.assertIn('if (releaseToken) bridgeToken = "";', self.source)
 
