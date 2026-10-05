@@ -19,7 +19,7 @@
 
 - 背包整理采用单一可用副本语义：事务快照只作为不可游戏化恢复数据，假人在线时不会同时持有同一份假人物品
 - 整理期间锁定假人的移动、三叉戟、删除、位置守护与自动补生；假人会从世界中移除，避免捡物、死亡或其他库存变更
-- 归还采用 `RETURNING_PREPARED → PLAYER_CLEARED → BOT_RESTORED` 分阶段 journal，并在每一步校验 SHA-256 digest
+- 归还采用 `RETURNING_PREPARED → PLAYER_CLEARED → BOT_RESTORED → PLAYER_RESTORED` 分阶段 journal，并在每一步校验 SHA-256 digest
 - 发生状态歧义或恢复校验失败时 fail-close：保留事务锁，不静默覆盖或复制物品
 
 
