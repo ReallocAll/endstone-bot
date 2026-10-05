@@ -48,7 +48,7 @@ class BehaviorPackTests(unittest.TestCase):
 
     def test_fake_players_use_standalone_api_only(self):
         self.assertIn("GameTest.spawnSimulatedPlayer(", self.source)
-        self.assertIn("GameMode.Survival", self.source)
+        self.assertIn("survivalGameMode", self.source)
         self.assertIn("dimension: getDimension(req.d)", self.source)
         self.assertIn("standaloneSimulatedPlayerSupported", self.source)
 
@@ -74,7 +74,7 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("x: Number(req.x)", block)
         self.assertIn("y: Number(req.y)", block)
         self.assertIn("z: Number(req.z)", block)
-        self.assertIn("GameMode.Survival", block)
+        self.assertIn("survivalGameMode", block)
         self.assertNotIn("teleportSim(", block)
 
     def test_new_spawn_fail_closes_without_legacy_fallback(self):
