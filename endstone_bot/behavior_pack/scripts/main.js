@@ -6,14 +6,15 @@
  * - the first valid bot:hello establishes the per-process token
  * - every later command must carry the exact same token and protocol
  *
- * Protocol 2 intentionally keeps the bridge small: spawn/remove/teleport/trident/list/clear,
- * heartbeat, lifecycle acknowledgements, loss notifications, and batched positions.
+ * Protocol 3 adds transactional 36-slot inventory custody. Inventory editing uses
+ * physical Container.swapItems operations; snapshots are maintained by the plugin
+ * only for crash recovery and verification.
  */
 
 import * as GameTest from "@minecraft/server-gametest";
-import { StructureSaveMode, system, world } from "@minecraft/server";
+import { GameMode, StructureSaveMode, system, world } from "@minecraft/server";
 
-const PROTOCOL = 2;
+const PROTOCOL = 3;
 const MAX_MESSAGE_CHARS = 1400;
 let bridgeToken = "";
 let activeTest = null;
@@ -24,6 +25,8 @@ const pendingSpawns = [];
 const tridentBusy = new Set();
 const deadPlayers = new Set();
 const desiredPoses = new Map();
+const inventoryLeases = new Map();
+const MAIN_INVENTORY_SLOTS = 36;
 
 function sourceKind(event) {
     try {
@@ -335,6 +338,10 @@ function finishRemove(name, sim) {
 
 function doRemove(nameValue) {
     const name = String(nameValue || "");
+    if (inventoryLeases.has(name)) {
+        reply("bot:error", { n: name, e: "inventory custody is active; refusing remove" });
+        return;
+    }
     const sim = simulatedPlayers.get(name);
     if (!sim) {
         reply("bot:removed", { n: name, existed: false });
@@ -418,6 +425,10 @@ function verifyViewSync(name, sim, pose) {
 
 function doTeleport(req) {
     const name = String(req.n || "");
+    if (inventoryLeases.has(name)) {
+        reply("bot:error", { n: name, e: "inventory custody is active; refusing teleport" });
+        return;
+    }
     const pose = rememberPose(req);
     const sim = simulatedPlayers.get(name);
     if (!sim) {
@@ -535,6 +546,10 @@ function playerWithinOneBlock(sim) {
 function doThrowTrident(req) {
     const name = String(req.n || "");
     const requester = String(req.r || "");
+    if (inventoryLeases.has(name)) {
+        tridentResult(name, requester, false, "inventory_custody");
+        return;
+    }
     const pose = rememberPose(req);
     const sim = simulatedPlayers.get(name);
     if (!sim) {
@@ -627,6 +642,400 @@ function doThrowTrident(req) {
     }, 1);
 }
 
+function inventoryContainer(entity) {
+    try {
+        const component = entity?.getComponent("minecraft:inventory");
+        const container = component?.container;
+        if (!container || !container.isValid || Number(container.size) < MAIN_INVENTORY_SLOTS) {
+            return null;
+        }
+        return container;
+    } catch (_) {
+        return null;
+    }
+}
+
+function findRealPlayer(nameValue) {
+    const wanted = String(nameValue || "");
+    for (const player of world.getAllPlayers()) {
+        try {
+            if (String(player.name || "") !== wanted) continue;
+            if (simulatedPlayers.has(String(player.name || ""))) continue;
+            return player;
+        } catch (_) {}
+    }
+    return null;
+}
+
+function gameModeValue(raw) {
+    const mode = String(raw || "survival").toLowerCase();
+    if (mode.includes("spectator")) return GameMode.Spectator ?? GameMode.spectator ?? "spectator";
+    if (mode.includes("creative")) return GameMode.Creative ?? GameMode.creative ?? "creative";
+    if (mode.includes("adventure")) return GameMode.Adventure ?? GameMode.adventure ?? "adventure";
+    return GameMode.Survival ?? GameMode.survival ?? "survival";
+}
+
+function lockInventoryBot(sim) {
+    let previous = "survival";
+    try { previous = String(sim.getGameMode()); } catch (_) {}
+    try { sim.stopMoving(); } catch (_) {}
+    try { sim.stopUsingItem(); } catch (_) {}
+    sim.setGameMode(gameModeValue("spectator"));
+    return previous;
+}
+
+function unlockInventoryBot(sim, previousGameMode) {
+    try { sim.stopMoving(); } catch (_) {}
+    try { sim.stopUsingItem(); } catch (_) {}
+    try {
+        sim.setGameMode(gameModeValue(previousGameMode));
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function swapMainInventories(first, second) {
+    if (!first || !second) throw new Error("inventory container unavailable");
+    if (Number(first.size) < MAIN_INVENTORY_SLOTS || Number(second.size) < MAIN_INVENTORY_SLOTS) {
+        throw new Error("inventory container has fewer than 36 slots");
+    }
+
+    const completed = [];
+    try {
+        for (let slot = 0; slot < MAIN_INVENTORY_SLOTS; slot++) {
+            first.swapItems(slot, slot, second);
+            completed.push(slot);
+        }
+    } catch (e) {
+        let rollbackError = null;
+        for (let index = completed.length - 1; index >= 0; index--) {
+            try {
+                first.swapItems(completed[index], completed[index], second);
+            } catch (rollback) {
+                rollbackError = rollback;
+                break;
+            }
+        }
+        if (rollbackError) {
+            throw new Error(`inventory swap failed and rollback failed: ${String(e)} / ${String(rollbackError)}`);
+        }
+        throw new Error(`inventory swap failed; rollback completed: ${String(e)}`);
+    }
+}
+
+function mainInventoryEmpty(container) {
+    if (!container || Number(container.size) < MAIN_INVENTORY_SLOTS) return false;
+    for (let slot = 0; slot < MAIN_INVENTORY_SLOTS; slot++) {
+        if (container.getItem(slot)) return false;
+    }
+    return true;
+}
+
+function inventorySessionValid(value) {
+    return /^[0-9a-f]{32}$/i.test(String(value || ""));
+}
+
+function playerAlreadyLeased(playerName) {
+    const wanted = String(playerName || "");
+    for (const lease of inventoryLeases.values()) {
+        if (String(lease.playerName || "") === wanted) return true;
+    }
+    return false;
+}
+
+function doInventoryBegin(req) {
+    const name = String(req.n || "");
+    const playerName = String(req.r || "");
+    const session = String(req.s || "");
+    if (!name || !playerName || !inventorySessionValid(session)) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "invalid_request" });
+        return;
+    }
+    if (inventoryLeases.has(name) || playerAlreadyLeased(playerName)) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "already_locked" });
+        return;
+    }
+
+    const sim = simulatedPlayers.get(name);
+    const player = findRealPlayer(playerName);
+    if (!sim || !player) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: !sim ? "bot_not_found" : "player_not_found" });
+        return;
+    }
+    if (isDeadSim(name, sim) || tridentBusy.has(name)) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "bot_busy" });
+        return;
+    }
+
+    const botInventory = inventoryContainer(sim);
+    const playerInventory = inventoryContainer(player);
+    if (!botInventory || !playerInventory) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "inventory_unavailable" });
+        return;
+    }
+
+    const botSelected = Math.max(0, Math.min(8, Number(sim.selectedSlotIndex ?? 0)));
+    const playerSelected = Math.max(0, Math.min(8, Number(player.selectedSlotIndex ?? 0)));
+    let gameMode = "survival";
+    let playerGameMode = "survival";
+    try {
+        gameMode = lockInventoryBot(sim);
+        playerGameMode = lockInventoryBot(player);
+        swapMainInventories(playerInventory, botInventory);
+    } catch (e) {
+        const poisoned = String(e).includes("rollback failed");
+        if (poisoned) {
+            inventoryLeases.set(name, {
+                session,
+                playerName,
+                playerSelected,
+                botSelected,
+                gameMode,
+                playerGameMode,
+                ready: false,
+                recovery: false,
+                poisoned: true,
+            });
+        } else {
+            unlockInventoryBot(sim, gameMode);
+            unlockInventoryBot(player, playerGameMode);
+        }
+        reply("bot:inventory_error", {
+            n: name, r: playerName, s: session,
+            reason: poisoned ? "begin_rollback_failed" : "begin_failed",
+            e: String(e),
+        });
+        return;
+    }
+
+    inventoryLeases.set(name, {
+        session,
+        playerName,
+        playerSelected,
+        botSelected,
+        gameMode,
+        playerGameMode,
+        ready: false,
+        recovery: false,
+        poisoned: false,
+    });
+    reply("bot:inventory_swapped", {
+        n: name,
+        r: playerName,
+        s: session,
+        bot_slot: botSelected,
+        player_slot: playerSelected,
+        game_mode: gameMode,
+        player_game_mode: playerGameMode,
+    });
+}
+
+function doInventoryReady(req) {
+    const name = String(req.n || "");
+    const playerName = String(req.r || "");
+    const session = String(req.s || "");
+    const lease = inventoryLeases.get(name);
+    if (!lease || lease.session !== session || lease.playerName !== playerName || lease.recovery) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "ready_session_mismatch" });
+        return;
+    }
+    if (lease.poisoned) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "poisoned" });
+        return;
+    }
+    const player = findRealPlayer(playerName);
+    if (!player) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "ready_player_not_found" });
+        return;
+    }
+    if (!lease.ready) {
+        if (!unlockInventoryBot(player, lease.playerGameMode)) {
+            reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "ready_restore_gamemode_failed" });
+            return;
+        }
+        lease.ready = true;
+    }
+    reply("bot:inventory_ready_ack", { n: name, r: playerName, s: session });
+}
+
+function doInventoryFinish(req) {
+    const name = String(req.n || "");
+    const playerName = String(req.r || "");
+    const session = String(req.s || "");
+    const lease = inventoryLeases.get(name);
+    const rollbackRequest = Boolean(req.rb);
+    if (!lease || lease.session !== session || lease.playerName !== playerName || lease.recovery) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "session_mismatch" });
+        return;
+    }
+    if (lease.poisoned) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "poisoned" });
+        return;
+    }
+    if (!lease.ready && !rollbackRequest) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "not_ready" });
+        return;
+    }
+
+    const sim = simulatedPlayers.get(name);
+    const player = findRealPlayer(playerName);
+    const botInventory = inventoryContainer(sim);
+    const playerInventory = inventoryContainer(player);
+    if (!sim || !player || !botInventory || !playerInventory) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "finish_unavailable" });
+        return;
+    }
+
+    const editedSelected = rollbackRequest
+        ? lease.botSelected
+        : Math.max(0, Math.min(8, Number(player.selectedSlotIndex ?? 0)));
+    try {
+        swapMainInventories(playerInventory, botInventory);
+    } catch (e) {
+        if (String(e).includes("rollback failed")) lease.poisoned = true;
+        reply("bot:inventory_error", {
+            n: name, r: playerName, s: session,
+            reason: lease.poisoned ? "finish_rollback_failed" : "finish_failed",
+            e: String(e),
+        });
+        return;
+    }
+
+    try { sim.selectedSlotIndex = editedSelected; } catch (_) {}
+    try { player.selectedSlotIndex = lease.playerSelected; } catch (_) {}
+    const botModeRestored = unlockInventoryBot(sim, lease.gameMode);
+    const playerModeRestored = unlockInventoryBot(player, lease.playerGameMode);
+    if (!botModeRestored || !playerModeRestored) {
+        lease.poisoned = true;
+        reply("bot:inventory_error", {
+            n: name, r: playerName, s: session,
+            reason: "finish_restore_gamemode_failed",
+        });
+        return;
+    }
+    inventoryLeases.delete(name);
+    reply("bot:inventory_committed", {
+        n: name, r: playerName, s: session,
+        bot_slot: editedSelected,
+        rolled_back: rollbackRequest,
+    });
+}
+
+function doInventoryRecover(req) {
+    const name = String(req.n || "");
+    const playerName = String(req.r || "");
+    const session = String(req.s || "");
+    if (!name || !playerName || !inventorySessionValid(session)) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "invalid_recovery" });
+        return;
+    }
+    if (inventoryLeases.has(name) || playerAlreadyLeased(playerName)) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "already_locked" });
+        return;
+    }
+
+    const sim = simulatedPlayers.get(name);
+    const player = findRealPlayer(playerName);
+    const botInventory = inventoryContainer(sim);
+    const playerInventory = inventoryContainer(player);
+    if (!sim || !player || !botInventory || !playerInventory) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "recovery_unavailable" });
+        return;
+    }
+    if (!mainInventoryEmpty(botInventory)) {
+        // Never overwrite a non-empty replacement bot. It may still own the
+        // player's old inventory, so automatic reconstruction could duplicate.
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "recovery_bot_not_empty" });
+        return;
+    }
+
+    const editedSelected = Math.max(0, Math.min(8, Number(player.selectedSlotIndex ?? 0)));
+    let gameMode = "survival";
+    const intendedPlayerGameMode = String(req.pg || "survival");
+    let currentPlayerGameMode = intendedPlayerGameMode;
+    try {
+        gameMode = lockInventoryBot(sim);
+        currentPlayerGameMode = lockInventoryBot(player);
+        swapMainInventories(playerInventory, botInventory);
+    } catch (e) {
+        const poisoned = String(e).includes("rollback failed");
+        if (poisoned) {
+            inventoryLeases.set(name, {
+                session,
+                playerName,
+                playerSelected: 0,
+                botSelected: editedSelected,
+                gameMode,
+                playerGameMode: intendedPlayerGameMode,
+                ready: false,
+                recovery: true,
+                poisoned: true,
+            });
+        } else {
+            unlockInventoryBot(sim, gameMode);
+            unlockInventoryBot(player, currentPlayerGameMode);
+        }
+        reply("bot:inventory_error", {
+            n: name, r: playerName, s: session,
+            reason: poisoned ? "recovery_rollback_failed" : "recovery_store_failed",
+            e: String(e),
+        });
+        return;
+    }
+
+    inventoryLeases.set(name, {
+        session,
+        playerName,
+        playerSelected: 0,
+        botSelected: editedSelected,
+        gameMode,
+        playerGameMode: intendedPlayerGameMode,
+        ready: false,
+        recovery: true,
+        poisoned: false,
+    });
+    try { sim.selectedSlotIndex = editedSelected; } catch (_) {}
+    reply("bot:inventory_recovery_stored", {
+        n: name, r: playerName, s: session,
+        bot_slot: editedSelected,
+        game_mode: gameMode,
+    });
+}
+
+function doInventoryRecoveryFinalize(req) {
+    const name = String(req.n || "");
+    const playerName = String(req.r || "");
+    const session = String(req.s || "");
+    const lease = inventoryLeases.get(name);
+    if (!lease || !lease.recovery || lease.session !== session || lease.playerName !== playerName) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "recovery_session_mismatch" });
+        return;
+    }
+    const sim = simulatedPlayers.get(name);
+    if (!sim) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "recovery_bot_lost" });
+        return;
+    }
+    const player = findRealPlayer(playerName);
+    if (!player) {
+        reply("bot:inventory_error", { n: name, r: playerName, s: session, reason: "recovery_player_lost" });
+        return;
+    }
+    const botModeRestored = unlockInventoryBot(sim, lease.gameMode);
+    const playerModeRestored = unlockInventoryBot(player, lease.playerGameMode);
+    if (!botModeRestored || !playerModeRestored) {
+        lease.poisoned = true;
+        reply("bot:inventory_error", {
+            n: name, r: playerName, s: session,
+            reason: "recovery_restore_gamemode_failed",
+        });
+        return;
+    }
+    inventoryLeases.delete(name);
+    reply("bot:inventory_recovery_finalized", { n: name, r: playerName, s: session });
+}
+
 function clearAll() {
     const entries = Array.from(simulatedPlayers.entries());
     for (const [name, sim] of entries) {
@@ -639,6 +1048,7 @@ function clearAll() {
         desiredPoses.delete(name);
     }
     pendingSpawns.length = 0;
+    inventoryLeases.clear();
     reply("bot:cleared", { count: entries.length });
 }
 
@@ -795,6 +1205,21 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
         case "bot:trident":
             doThrowTrident(data);
             break;
+        case "bot:inventory_begin":
+            doInventoryBegin(data);
+            break;
+        case "bot:inventory_ready":
+            doInventoryReady(data);
+            break;
+        case "bot:inventory_finish":
+            doInventoryFinish(data);
+            break;
+        case "bot:inventory_recover":
+            doInventoryRecover(data);
+            break;
+        case "bot:inventory_recovery_finalize":
+            doInventoryRecoveryFinalize(data);
+            break;
         case "bot:list":
             sendList();
             break;
@@ -836,7 +1261,22 @@ try {
 
         deadPlayers.add(name);
         tridentBusy.delete(name);
-        reply("bot:lost", { n: name, reason: "dead" });
+        const lease = inventoryLeases.get(name);
+        reply("bot:lost", {
+            n: name,
+            reason: "dead",
+            inventory_session: lease ? String(lease.session || "") : "",
+        });
+
+        if (lease) {
+            // Death can create world drops. Never respawn/reconstruct from
+            // backups automatically while those drops may still exist.
+            inventoryLeases.delete(name);
+            try { sim.disconnect(); } catch (_) {}
+            simulatedPlayers.delete(name);
+            deadPlayers.delete(name);
+            return;
+        }
 
         const pose = desiredPoses.get(name);
         if (!pose) return;
@@ -854,11 +1294,17 @@ try {
         const name = String(event.playerName || "");
         if (simulatedPlayers.has(name)) {
             // A death may also surface as a leave on some beta builds. The
-            // entityDie handler owns that lifecycle and is about to respawn it.
+            // entityDie handler owns that lifecycle.
             if (deadPlayers.has(name)) return;
+            const lease = inventoryLeases.get(name);
             simulatedPlayers.delete(name);
             tridentBusy.delete(name);
-            reply("bot:lost", { n: name, reason: "left" });
+            inventoryLeases.delete(name);
+            reply("bot:lost", {
+                n: name,
+                reason: "left",
+                inventory_session: lease ? String(lease.session || "") : "",
+            });
         }
     });
 } catch (_) {}
@@ -879,10 +1325,16 @@ system.runInterval(() => {
         }
         try {
             if (!sim.isValid) {
+                const lease = inventoryLeases.get(name);
                 simulatedPlayers.delete(name);
                 deadPlayers.delete(name);
                 tridentBusy.delete(name);
-                reply("bot:lost", { n: name, reason: "invalid" });
+                inventoryLeases.delete(name);
+                reply("bot:lost", {
+                    n: name,
+                    reason: "invalid",
+                    inventory_session: lease ? String(lease.session || "") : "",
+                });
                 continue;
             }
             const loc = sim.location;
@@ -894,10 +1346,16 @@ system.runInterval(() => {
                 d: sim.dimension ? sim.dimension.id : "minecraft:overworld",
             });
         } catch (_) {
+            const lease = inventoryLeases.get(name);
             simulatedPlayers.delete(name);
             deadPlayers.delete(name);
             tridentBusy.delete(name);
-            reply("bot:lost", { n: name, reason: "position_error" });
+            inventoryLeases.delete(name);
+            reply("bot:lost", {
+                n: name,
+                reason: "position_error",
+                inventory_session: lease ? String(lease.session || "") : "",
+            });
         }
     }
     flushPositions(report);

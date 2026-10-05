@@ -96,6 +96,48 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("req.dy", self.source)
         self.assertIn("req.dz", self.source)
 
+    def test_inventory_edit_uses_physical_36_slot_swaps_with_rollback(self):
+        self.assertIn("const MAIN_INVENTORY_SLOTS = 36", self.source)
+        self.assertIn("first.swapItems(slot, slot, second)", self.source)
+        self.assertIn("for (let index = completed.length - 1; index >= 0; index--)", self.source)
+        self.assertIn("inventory swap failed and rollback failed", self.source)
+
+    def test_inventory_edit_locks_both_participants_until_dual_backup_ready(self):
+        self.assertIn('gameMode = lockInventoryBot(sim)', self.source)
+        self.assertIn('playerGameMode = lockInventoryBot(player)', self.source)
+        self.assertIn("function doInventoryReady(req)", self.source)
+        self.assertIn("if (!lease.ready && !rollbackRequest)", self.source)
+        self.assertIn("unlockInventoryBot(player, lease.playerGameMode)", self.source)
+        self.assertIn("inventoryLeases", self.source)
+        self.assertIn("inventory_custody", self.source)
+
+    def test_inventory_recovery_refuses_non_empty_replacement_bot(self):
+        start = self.source.index("function doInventoryRecover(req)")
+        end = self.source.index("\nfunction doInventoryRecoveryFinalize(", start)
+        block = self.source[start:end]
+        self.assertIn("if (!mainInventoryEmpty(botInventory))", block)
+        self.assertIn("recovery_bot_not_empty", block)
+        self.assertIn("swapMainInventories(playerInventory, botInventory)", block)
+
+    def test_inventory_finish_makes_players_selected_hotbar_slot_the_bot_main_hand(self):
+        start = self.source.index("function doInventoryFinish(req)")
+        end = self.source.index("\nfunction doInventoryRecover(", start)
+        block = self.source[start:end]
+        self.assertIn("const editedSelected =", block)
+        self.assertIn("sim.selectedSlotIndex = editedSelected", block)
+        self.assertIn("player.selectedSlotIndex = lease.playerSelected", block)
+
+    def test_inventory_bridge_protocol_is_v3(self):
+        self.assertIn("const PROTOCOL = 3;", self.source)
+        for event in (
+            "bot:inventory_begin",
+            "bot:inventory_ready",
+            "bot:inventory_finish",
+            "bot:inventory_recover",
+            "bot:inventory_recovery_finalize",
+        ):
+            self.assertIn(event, self.source)
+
     def test_routine_bridge_handshake_is_quiet(self):
         self.assertNotIn("hello received:", self.source)
         self.assertNotIn("hello_ack dispatched", self.source)

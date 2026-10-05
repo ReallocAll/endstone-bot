@@ -34,6 +34,23 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn("def on_player_join(self, event: PlayerJoinEvent) -> None:", self.plugin_source)
         self.assertIn("def on_script_message(self, event: ScriptMessageEvent) -> None:", self.plugin_source)
 
+    def test_inventory_edit_has_single_owner_locking(self):
+        self.assertIn("def toggle_inventory_edit(", self.source)
+        self.assertIn("self._plugin.inventory_sessions.for_player(sender)", self.source)
+        self.assertIn("self.inventory_locked(fp)", self.source)
+        self.assertIn('"inventory_begin"', self.source)
+        self.assertIn('"inventory_finish"', self.source)
+
+    def test_plugin_blocks_removeall_during_inventory_custody(self):
+        self.assertIn("if self.inventory_sessions.all():", self.plugin_source)
+        self.assertIn("不能执行 removeall", self.plugin_source)
+
+    def test_plugin_recovers_only_from_persisted_recovery_state(self):
+        self.assertIn("def _inventory_recovery_poll(", self.plugin_source)
+        self.assertIn('"recovery_pending"', self.plugin_source)
+        self.assertIn('"inventory_recover"', self.plugin_source)
+        self.assertIn('"inventory_recovery_finalize"', self.plugin_source)
+
     def test_bridge_dispatch_uses_quiet_command_sender_wrapper(self):
         self.assertIn("CommandSenderWrapper", self.plugin_source)
         self.assertIn("on_message=lambda _message: None", self.plugin_source)

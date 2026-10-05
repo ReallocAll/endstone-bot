@@ -15,6 +15,7 @@ from endstone.plugin import Plugin
 from endstone_bot.beta_script import write_patch_script
 from endstone_bot.bridge import BRIDGE_PROTOCOL, BridgeManager
 from endstone_bot.gui import BotGUI
+from endstone_bot.inventory_sessions import InventorySessionStore
 from endstone_bot.manager import FakeBotManager
 from endstone_bot.settings import SettingsManager
 
@@ -33,7 +34,7 @@ class BotPlugin(Plugin):
             "usages": [
                 "/bot",
                 "/bot (gui|list|status|admin|removeall)<action: BotSimpleAction>",
-                "/bot (spawn|remove|tp|trident)<action: BotNamedAction> <name: str>",
+                "/bot (spawn|remove|tp|trident|inventory)<action: BotNamedAction> <name: str>",
                 "/bot (createat)<action: BotCreateAtAction> <name: str> <owner: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotDimension>",
                 "/bot (moveat)<action: BotMoveAtAction> <name: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotMoveDimension>",
                 "/bot (limit)<action: BotLimitAction> <player: str> (show|unlimited|default)<mode: BotLimitSimpleMode>",
@@ -54,7 +55,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 2, 8]
+    BEHAVIOR_PACK_VERSION = [4, 3, 0]
 
     def on_load(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -72,6 +73,7 @@ class BotPlugin(Plugin):
                 on_error=self._on_bridge_command_error,
             )
         self.bridge = BridgeManager(self.logger, self._dispatch)
+        self.inventory_sessions = InventorySessionStore(self.data_folder, self.logger)
         self.manager = FakeBotManager(
             self, self.data_folder, self.bridge, self.settings, self.logger
         )
@@ -88,6 +90,7 @@ class BotPlugin(Plugin):
         scheduler = self.server.scheduler
         scheduler.run_task(self, self._tick, delay=1, period=1)
         scheduler.run_task(self, self._bridge_poll, delay=20, period=100)
+        scheduler.run_task(self, self._inventory_recovery_poll, delay=40, period=40)
         scheduler.run_task(self, self.manager.ensure_all_spawned, delay=60, period=100)
 
         self.bridge.hello()
@@ -143,6 +146,16 @@ class BotPlugin(Plugin):
             )
             self._bridge_warning_sent = True
 
+    def _inventory_recovery_poll(self) -> None:
+        if not self.bridge.active:
+            return
+        for session in self.inventory_sessions.all():
+            state = str(session.get("state", ""))
+            if state == "prepared":
+                self._send_inventory_ready(session)
+            elif state == "recovery_pending":
+                self._try_inventory_recovery(session)
+
     @event_handler
     def on_player_join(self, event: PlayerJoinEvent) -> None:
         player = event.player
@@ -157,6 +170,7 @@ class BotPlugin(Plugin):
                 changed = True
         if changed:
             self.manager.save()
+        self._maybe_recover_inventory_for_player(player)
 
     @event_handler
     def on_script_message(self, event: ScriptMessageEvent) -> None:
@@ -180,6 +194,26 @@ class BotPlugin(Plugin):
             self.manager.mark_spawned(name, ok)
             if ok and not data.get("existed") and not data.get("respawned"):
                 self.logger.info(f"假人 {name} 已生成。")
+            if ok:
+                self._maybe_recover_inventory_for_bot(name)
+            return
+        if msg_id == "bot:inventory_swapped":
+            self._handle_inventory_swapped(data)
+            return
+        if msg_id == "bot:inventory_ready_ack":
+            self._handle_inventory_ready(data)
+            return
+        if msg_id == "bot:inventory_committed":
+            self._handle_inventory_committed(data)
+            return
+        if msg_id == "bot:inventory_recovery_stored":
+            self._handle_inventory_recovery_stored(data)
+            return
+        if msg_id == "bot:inventory_recovery_finalized":
+            self._handle_inventory_recovery_finalized(data)
+            return
+        if msg_id == "bot:inventory_error":
+            self._handle_inventory_error(data)
             return
         if msg_id == "bot:trident_result":
             self._handle_trident_result(data)
@@ -188,7 +222,43 @@ class BotPlugin(Plugin):
             fp = self.manager.get_by_name(str(data.get("n", "")))
             if fp is not None:
                 reason = str(data.get("reason", "") or "")
-                if reason != "dead":
+                session = self.inventory_sessions.for_bot_id(fp.id)
+                if session is not None:
+                    session_id = str(session.get("session_id", ""))
+                    state = str(session.get("state", ""))
+                    remote_session = str(data.get("inventory_session", "") or "")
+                    if reason == "dead":
+                        self.inventory_sessions.set_state(session_id, "manual_review")
+                        self.logger.error(
+                            f"假人 {fp.name} 在背包托管期间死亡；为避免掉落物与备份同时恢复造成刷物，"
+                            "事务已 fail-close 锁定，需要人工检查。"
+                        )
+                        self._message_inventory_player(
+                            session,
+                            "§c假人在背包托管期间异常死亡。为防止刷物，事务已锁定，请联系管理员处理。",
+                        )
+                    elif (
+                        state in ("prepared", "editing")
+                        and remote_session == session_id
+                    ):
+                        self.inventory_sessions.set_state(session_id, "recovery_pending")
+                        self._message_inventory_player(
+                            session,
+                            "§e假人连接中断，已确认旧托管对象失效；背包事务进入安全恢复状态。"
+                            "请暂时不要移动当前背包物品。",
+                        )
+                    else:
+                        self.inventory_sessions.set_state(session_id, "manual_review")
+                        self.logger.error(
+                            f"假人 {fp.name} 在背包事务 state={state} 时异常离线，"
+                            "所有权无法自动证明，已 fail-close。"
+                        )
+                        self._message_inventory_player(
+                            session,
+                            "§c假人在背包事务中异常离线且所有权状态不确定，已锁定，请联系管理员。",
+                        )
+                    fp.sim_spawn_confirmed = False
+                elif reason != "dead":
                     fp.sim_spawn_confirmed = False
                 fp.sim_has_position = False
                 fp.sim_last_seen_at = 0.0
@@ -220,6 +290,272 @@ class BotPlugin(Plugin):
             self.logger.warning(
                 f"行为包错误 [{data.get('n', '')}]: {data.get('e', 'unknown error')}"
             )
+
+    def _find_inventory_player(self, session: dict[str, Any]) -> Any | None:
+        wanted_uuid = str(session.get("player_uuid", "") or "")
+        wanted_name = str(session.get("player_name", "") or "")
+        for player in self.server.online_players:
+            try:
+                uuid = str(getattr(player, "unique_id", "") or "")
+                name = str(getattr(player, "name", "") or "")
+                if wanted_uuid and uuid == wanted_uuid:
+                    return player
+                if not wanted_uuid and wanted_name and name.lower() == wanted_name.lower():
+                    return player
+            except Exception:
+                continue
+        return None
+
+    def _message_inventory_player(self, session: dict[str, Any], message: str) -> None:
+        player = self._find_inventory_player(session)
+        if player is not None:
+            try:
+                player.send_message(message)
+            except Exception:
+                pass
+
+    def _maybe_recover_inventory_for_player(self, player: Any) -> None:
+        session = self.inventory_sessions.for_player(player)
+        if session is None or str(session.get("state", "")) != "recovery_pending":
+            return
+        self._try_inventory_recovery(session)
+
+    def _maybe_recover_inventory_for_bot(self, bot_name: str) -> None:
+        session = self.inventory_sessions.for_bot_name(bot_name)
+        if session is None or str(session.get("state", "")) != "recovery_pending":
+            return
+        self._try_inventory_recovery(session)
+
+    def _try_inventory_recovery(self, session: dict[str, Any]) -> None:
+        if not self.bridge.active or str(session.get("state", "")) != "recovery_pending":
+            return
+        player = self._find_inventory_player(session)
+        fp = self.manager.get_by_name(str(session.get("bot_name", "")))
+        if player is None or fp is None or not fp.sim_spawn_confirmed:
+            return
+        session_id = str(session.get("session_id", ""))
+        self.inventory_sessions.set_state(session_id, "recovery_storing")
+        ok = self.bridge.send_bridge(
+            "inventory_recover",
+            {
+                "n": fp.name,
+                "r": str(getattr(player, "name", "") or ""),
+                "s": session_id,
+                "pg": str(session.get("player_game_mode", "survival") or "survival"),
+            },
+        )
+        if not ok:
+            self.inventory_sessions.set_state(session_id, "recovery_pending")
+
+    def _handle_inventory_swapped(self, data: dict[str, Any]) -> None:
+        session_id = str(data.get("s", "") or "")
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None:
+            self.logger.error("收到未知背包事务的 inventory_swapped；保持远端锁定。")
+            return
+        player = self._find_inventory_player(session)
+        if player is None:
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            self.logger.error("背包已交换但玩家已离线；事务 fail-close 锁定。")
+            return
+        try:
+            self.inventory_sessions.mark_swapped(
+                session_id,
+                player,
+                bot_held_slot=int(data.get("bot_slot", 0)),
+                bot_game_mode=str(data.get("game_mode", "survival")),
+                player_game_mode=str(data.get("player_game_mode", "survival")),
+            )
+        except Exception as exc:
+            # The physical swap succeeded but the second durable snapshot failed.
+            # Immediately request the inverse swap. Do not allow editing to start.
+            self.logger.error(f"备份假人背包失败，正在回滚物理交换: {exc}")
+            try:
+                self.inventory_sessions.set_state(session_id, "rollback_pending")
+            except Exception as state_exc:
+                # The journal is copy-on-write, so a failed state write leaves
+                # the durable "preparing" record intact. Physical rollback is
+                # still the safest action and must not depend on another disk write.
+                self.logger.error(f"记录 rollback_pending 失败，仍尝试物理回滚: {state_exc}")
+            ok = self.bridge.send_bridge(
+                "inventory_finish",
+                {
+                    "n": str(session.get("bot_name", "")),
+                    "r": str(session.get("player_name", "")),
+                    "s": session_id,
+                    "rb": True,
+                },
+            )
+            if not ok:
+                try:
+                    self.inventory_sessions.set_state(session_id, "manual_review")
+                except Exception as state_exc:
+                    self.logger.error(f"记录 manual_review 失败: {state_exc}")
+            return
+
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None or not self._send_inventory_ready(session):
+            self.logger.warning("假人背包双份备份已持久化，但 ready 握手发送失败；将自动重试。")
+
+    def _send_inventory_ready(self, session: dict[str, Any]) -> bool:
+        if not self.bridge.active or str(session.get("state", "")) != "prepared":
+            return False
+        return self.bridge.send_bridge(
+            "inventory_ready",
+            {
+                "n": str(session.get("bot_name", "")),
+                "r": str(session.get("player_name", "")),
+                "s": str(session.get("session_id", "")),
+            },
+        )
+
+    def _handle_inventory_ready(self, data: dict[str, Any]) -> None:
+        session_id = str(data.get("s", "") or "")
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None:
+            self.logger.error("收到未知背包事务的 inventory_ready_ack；保持 fail-close。")
+            return
+        if str(session.get("state", "")) == "editing":
+            return
+        if str(session.get("state", "")) != "prepared":
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            return
+        self.inventory_sessions.set_state(session_id, "editing")
+        player = self._find_inventory_player(session)
+        if player is not None:
+            player.send_message(
+                "§a玩家原背包与假人原背包均已持久化备份。现在进入假人背包整理模式；"
+                "当前 36 格主背包就是假人的真实背包。整理完成后再次点击「完成背包整理」"
+                "或执行同一条 /bot inventory 命令。"
+            )
+
+    def _handle_inventory_committed(self, data: dict[str, Any]) -> None:
+        session_id = str(data.get("s", "") or "")
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None:
+            return
+        player = self._find_inventory_player(session)
+        previous_state = str(session.get("state", ""))
+        if player is None:
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            self.logger.error("背包交换已提交但无法验证玩家背包；事务保持锁定。")
+            return
+        try:
+            restored = self.inventory_sessions.verify_player_restored(session_id, player)
+        except Exception as exc:
+            restored = False
+            self.logger.error(f"验证玩家背包恢复失败: {exc}")
+        if not restored:
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            player.send_message(
+                "§c背包物理交换已结束，但玩家原背包校验失败。为防止刷物，假人保持锁定，请联系管理员。"
+            )
+            return
+
+        rolled_back = bool(data.get("rolled_back", False)) or previous_state == "rollback_pending"
+        result = "rolled_back" if rolled_back else "completed"
+        self.inventory_sessions.complete(session_id, result=result)
+        if rolled_back:
+            player.send_message("§e假人背包备份失败，但双方背包已安全回滚；未进入整理模式。")
+        else:
+            player.send_message(
+                "§a背包整理完成：假人已取得整理后的背包，你的原背包已恢复。"
+            )
+
+    def _handle_inventory_recovery_stored(self, data: dict[str, Any]) -> None:
+        session_id = str(data.get("s", "") or "")
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None:
+            return
+        player = self._find_inventory_player(session)
+        if player is None:
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            return
+        self.inventory_sessions.set_state(session_id, "recovery_restoring")
+        try:
+            self.inventory_sessions.restore_player_backup(session_id, player)
+        except Exception as exc:
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            self.logger.error(f"恢复玩家背包失败；事务已锁定: {exc}")
+            try:
+                player.send_message("§c自动恢复玩家原背包失败；为防止刷物，事务已锁定，请联系管理员。")
+            except Exception:
+                pass
+            return
+
+        ok = self.bridge.send_bridge(
+            "inventory_recovery_finalize",
+            {
+                "n": str(session.get("bot_name", "")),
+                "r": str(session.get("player_name", "")),
+                "s": session_id,
+            },
+        )
+        if not ok:
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            self.logger.error("玩家背包已恢复，但远端恢复 finalize 发送失败；保持 fail-close 锁定。")
+
+    def _handle_inventory_recovery_finalized(self, data: dict[str, Any]) -> None:
+        session_id = str(data.get("s", "") or "")
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None:
+            return
+        player = self._find_inventory_player(session)
+        if player is None:
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            return
+        try:
+            restored = self.inventory_sessions.verify_player_restored(session_id, player)
+        except Exception:
+            restored = False
+        if not restored:
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            return
+        self.inventory_sessions.complete(session_id, result="recovered")
+        player.send_message(
+            "§a检测到上次未正常结束的背包整理事务，已安全恢复："
+            "假人保留当时玩家持有的假人背包，你的原背包已还原。"
+        )
+
+    def _handle_inventory_error(self, data: dict[str, Any]) -> None:
+        session_id = str(data.get("s", "") or "")
+        reason = str(data.get("reason", "") or "unknown")
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None:
+            self.logger.warning(f"未知背包事务错误: {reason}")
+            return
+        state = str(session.get("state", ""))
+        if state == "preparing" and reason != "begin_rollback_failed":
+            # Rejected before transfer, or a failed swap whose reverse rollback
+            # completed successfully. In either case no ambiguous live ownership
+            # remains, so the durable journal can be discarded.
+            self.inventory_sessions.abort_before_swap(session_id)
+            self._message_inventory_player(session, f"§c无法开始整理假人背包：{reason}")
+            return
+        if state == "prepared" and reason in ("ready_player_not_found",):
+            # Player may reconnect; both backups and ownership are durable.
+            return
+        if state == "finishing" and reason == "finish_failed":
+            self.inventory_sessions.set_state(session_id, "editing")
+            self._message_inventory_player(session, "§e归还背包失败但已成功回滚交换；仍处于整理模式，可重试。")
+            return
+        if state == "recovery_storing" and reason in (
+            "recovery_unavailable",
+            "recovery_store_failed",
+        ):
+            self.inventory_sessions.set_state(session_id, "recovery_pending")
+            return
+
+        # rollback failure, non-empty recovery bot, poisoned lease, or any
+        # unexpected state is ownership-ambiguous. Never auto-reconstruct.
+        self.inventory_sessions.set_state(session_id, "manual_review")
+        self.logger.error(
+            f"背包事务进入 fail-close: session={session_id} state={state} reason={reason}"
+        )
+        self._message_inventory_player(
+            session,
+            "§c背包事务遇到不确定状态，已锁定以防止刷物。请联系管理员处理。",
+        )
 
     def _handle_trident_result(self, data: dict[str, Any]) -> None:
         name = str(data.get("n", "") or "假人")
@@ -322,6 +658,16 @@ class BotPlugin(Plugin):
             ok, message = self.manager.throw_trident_here(sender, fp)
             self._send_result(sender, ok, message)
             return True
+        if action == "inventory":
+            if len(args) < 2:
+                return True
+            fp = self.manager.get_by_name(str(args[1]))
+            if fp is None:
+                self._send_error(sender, "假人不存在。")
+                return True
+            ok, message = self.manager.toggle_inventory_edit(sender, fp)
+            self._send_result(sender, ok, message)
+            return True
         if action == "createat":
             return self._cmd_create_at(sender, args)
         if action == "moveat":
@@ -351,7 +697,8 @@ class BotPlugin(Plugin):
             f"假人：{len(self.manager.bots)} / {self.settings.max_total}\n"
             f"普通玩家默认：{self.settings.max_per_player} 个\n"
             f"创建冷却：{self.settings.spawn_cooldown_seconds}s\n"
-            f"位置守护：{'开启' if self.settings.guard_enabled else '关闭'}"
+            f"位置守护：{'开启' if self.settings.guard_enabled else '关闭'}\n"
+            f"背包托管事务：{len(self.inventory_sessions.all())}"
         )
 
     def _send_list(self, sender: CommandSender) -> None:
@@ -406,6 +753,12 @@ class BotPlugin(Plugin):
 
     def _cmd_remove_all(self, sender: CommandSender) -> bool:
         if not self._require_admin(sender):
+            return True
+        if self.inventory_sessions.all():
+            self._send_error(
+                sender,
+                "存在背包托管事务；为避免物品丢失或复制，不能执行 removeall。",
+            )
             return True
         count = len(self.manager.bots)
         self.manager.clear_remote()
