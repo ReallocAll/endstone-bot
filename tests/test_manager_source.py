@@ -43,7 +43,7 @@ class ManagerSourceTests(unittest.TestCase):
     def test_inventory_borrow_is_exclusive_and_journaled(self):
         self.assertIn("InventoryJournal", self.source)
         self.assertIn('self._put_inventory_session(fp, session, "BOT_CLEARED")', self.source)
-        self.assertIn('self._put_inventory_session(fp, session, "WAIT_REMOVE")', self.source)
+        self.assertIn('self._bridge.send_bridge("remove", {"n": fp.name})', self.source)
         self.assertIn('self._put_inventory_session(fp, session, "BORROWED")', self.source)
         self.assertIn('self._put_inventory_session(fp, session, "PLAYER_CLEARED")', self.source)
         self.assertIn('self._put_inventory_session(fp, session, "BOT_RESTORED")', self.source)
