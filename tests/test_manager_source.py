@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "endstone_bot" / "manager.py"
 PLUGIN = ROOT / "endstone_bot" / "plugin.py"
 JOURNAL = ROOT / "endstone_bot" / "inventory_journal.py"
+GUI = ROOT / "endstone_bot" / "gui.py"
 
 
 class ManagerSourceTests(unittest.TestCase):
@@ -14,6 +15,7 @@ class ManagerSourceTests(unittest.TestCase):
         cls.source = MANAGER.read_text(encoding="utf-8")
         cls.plugin_source = PLUGIN.read_text(encoding="utf-8")
         cls.journal_source = JOURNAL.read_text(encoding="utf-8")
+        cls.gui_source = GUI.read_text(encoding="utf-8")
 
     def test_trident_throw_uses_saved_pose_only(self):
         start = self.source.index("    def throw_trident_here(")
@@ -79,6 +81,28 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn("os.fsync", self.journal_source)
         self.assertIn("self._write_sessions(updated)", self.journal_source)
         self.assertIn("self.sessions = updated", self.journal_source)
+
+    def test_manual_offline_is_persistent_and_blocks_autospawn(self):
+        self.assertIn("not fp.desired_online", self.source)
+        self.assertIn("def set_online(", self.source)
+        self.assertIn('self._bridge.send_bridge("remove", {"n": fp.name})', self.source)
+        self.assertIn('return "手动下线"', self.source)
+        self.assertIn('"/bot (online|offline)<action: BotOnlineAction> <name: str>"', self.plugin_source)
+
+    def test_bot_action_callbacks_do_not_reopen_management_gui(self):
+        for method in ("_inventory_start", "_inventory_done", "_move_here", "_throw_trident", "_set_online"):
+            start = self.gui_source.index(f"    def {method}(")
+            next_def = self.gui_source.find("\n    def ", start + 5)
+            block = self.gui_source[start:] if next_def < 0 else self.gui_source[start:next_def]
+            self.assertNotIn("open_bot(", block, method)
+            self.assertNotIn("open_my_bots(", block, method)
+            self.assertNotIn("open_admin_bots(", block, method)
+
+    def test_create_success_does_not_auto_open_bot_list(self):
+        start = self.gui_source.index("    def open_create(")
+        end = self.gui_source.index("\n    def open_my_bots(", start)
+        block = self.gui_source[start:end]
+        self.assertNotIn("self.open_my_bots(p)", block)
 
     def test_bridge_errors_remain_visible(self):
         self.assertIn('self.logger.warning(f"bridge 命令执行失败: {message}")', self.plugin_source)
