@@ -90,6 +90,7 @@ class BotPlugin(Plugin):
         scheduler = self.server.scheduler
         scheduler.run_task(self, self._tick, delay=1, period=1)
         scheduler.run_task(self, self._bridge_poll, delay=20, period=100)
+        scheduler.run_task(self, self._inventory_recovery_poll, delay=40, period=40)
         scheduler.run_task(self, self.manager.ensure_all_spawned, delay=60, period=100)
 
         self.bridge.hello()
@@ -144,6 +145,13 @@ class BotPlugin(Plugin):
                 "再完整启动服务器。"
             )
             self._bridge_warning_sent = True
+
+    def _inventory_recovery_poll(self) -> None:
+        if not self.bridge.active:
+            return
+        for session in self.inventory_sessions.all():
+            if str(session.get("state", "")) == "recovery_pending":
+                self._try_inventory_recovery(session)
 
     @event_handler
     def on_player_join(self, event: PlayerJoinEvent) -> None:
@@ -450,8 +458,10 @@ class BotPlugin(Plugin):
             self.logger.warning(f"未知背包事务错误: {reason}")
             return
         state = str(session.get("state", ""))
-        if state == "preparing":
-            # Behavior pack rejected before ownership transfer.
+        if state == "preparing" and reason != "begin_rollback_failed":
+            # Rejected before transfer, or a failed swap whose reverse rollback
+            # completed successfully. In either case no ambiguous live ownership
+            # remains, so the durable journal can be discarded.
             self.inventory_sessions.abort_before_swap(session_id)
             self._message_inventory_player(session, f"§c无法开始整理假人背包：{reason}")
             return
@@ -617,7 +627,8 @@ class BotPlugin(Plugin):
             f"假人：{len(self.manager.bots)} / {self.settings.max_total}\n"
             f"普通玩家默认：{self.settings.max_per_player} 个\n"
             f"创建冷却：{self.settings.spawn_cooldown_seconds}s\n"
-            f"位置守护：{'开启' if self.settings.guard_enabled else '关闭'}"
+            f"位置守护：{'开启' if self.settings.guard_enabled else '关闭'}\n"
+            f"背包托管事务：{len(self.inventory_sessions.all())}"
         )
 
     def _send_list(self, sender: CommandSender) -> None:
