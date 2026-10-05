@@ -1,6 +1,6 @@
 # endstone-bot (server fork)
 
-面向 Endstone/BDS 生存服务器的轻量 **SimulatedPlayer 假人管理插件**。本 fork 基于 BCZZB/endstone-bot，保留 GameTest SimulatedPlayer 桥接，删除与挂机假人无关的 AI、NPC/entity、皮肤和 practice 遗留路径，并补上生产服务器需要的资源限制、管理员例外、GUI 与控制台管理。
+面向 Endstone/BDS 生存服务器的轻量 **SimulatedPlayer 假人管理插件**。本 fork 基于 BCZZB/endstone-bot，使用 standalone `GameTest.spawnSimulatedPlayer` API 创建真实 SimulatedPlayer，不启动任何 GameTest 实例；同时删除与挂机假人无关的 AI、NPC/entity、皮肤和 practice 遗留路径，并补上生产服务器需要的资源限制、管理员例外、GUI 与控制台管理。
 
 > 许可证仍为 PolyForm Noncommercial License 1.0.0。本 fork 面向非商业/公益服务器使用；上游 Required Notice 与许可证文件必须保留。
 
@@ -12,10 +12,10 @@
 - `/bot` 直接打开玩家 GUI，适合 ClockMenu 只执行一个命令接入。
 - 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
 - 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
-- “移动到我这里”负责保存假人的位置和世界空间视线方向；“投掷三叉戟”只使用这个已保存姿态，不会再次把假人传送到操作者身上。三叉戟实现采用与 FlashFakePlayerPack 等同类 Bedrock 假人行为包一致的原生 SimulatedPlayer 路径：假人由长期 GameTest 的 `Test.spawnSimulatedPlayer` 创建，背包内已有三叉戟会临时换到快捷栏 0，执行 `useItemInSlot(0)`，10 tick 后 `stopUsingItem()`。“移动到我这里”会先移动到保存的位置/维度，再以假人头部为起点，沿保存的 `dx/dy/dz` 计算世界绝对目标；由于 Test-bound SimulatedPlayer 的控制器位置参数使用 GameTest 相对坐标，插件会通过 `activeTest.relativeLocation(worldTarget)` 转换后再调用 `lookAtLocation(..., LookDuration.UntilMove)` 同步完整 pitch/yaw。该朝向会保持到假人发生下一次移动；投掷阶段不会再次修改视角。投掷阶段不会再次移动或修改视角，只执行原生 `useItemInSlot(0)` / `stopUsingItem()`。投掷前如果假人当前实际位置 1.0 格欧氏距离内有其他玩家则拒绝。不会生成或补充物品，也不自行构造 projectile。
+- “移动到我这里”负责保存假人的位置和世界空间视线方向；“投掷三叉戟”只使用这个已保存姿态，不会再次把假人传送到操作者身上。假人通过 standalone `GameTest.spawnSimulatedPlayer(DimensionLocation, name, GameMode.Survival)` 直接生成在目标维度和世界坐标，不再绑定 `Test`。视角同步直接把世界目标坐标传给 `lookAtLocation(..., LookDuration.UntilMove)`，不再做 GameTest 相对坐标转换。三叉戟仍只使用背包内已有物品：临时换到快捷栏 0，执行 `useItemInSlot(0)`，10 tick 后 `stopUsingItem()`，随后恢复原槽位。投掷阶段不会再次移动或修改视角；投掷前如果假人当前实际位置 1.0 格欧氏距离内有其他玩家则拒绝。不会生成或补充物品，也不自行构造 projectile。
 - 假人管理菜单新增“整理背包”。开始前插件会把玩家和假人的主背包完整 ItemStack/NBT 快照写入事务日志，然后清空并下线假人，把假人的主背包临时交给玩家整理；盔甲和副手不会参与同步。整理完成后，把希望假人拿着的物品拿在手上，再使用 `/bot` 重新打开假人菜单并选择“完成背包整理”。归还后假人会拿着你完成整理时手上拿着的物品，同时玩家原来的主背包会恢复。整个过程使用持久化事务状态和 digest 校验，任何歧义都会 fail-close，而不是复制物品。
 - 假人可以手动上线/下线；该状态会持久化。手动下线后不会被定时补生或 bridge reconcile 自动拉回。假人管理中的实际操作完成后 GUI 会关闭，玩家可移动、整理背包或调整站位后再手动重新打开菜单继续下一步。
-- SimulatedPlayer 使用长期 GameTest 承载。行为包会在 GameTest 启动前保存当前游戏规则，并在启动后恢复 GameTest 改动的规则，避免 `doDayLightCycle`、`doMobSpawning`、`randomTickSpeed` 等服务器设置被意外覆盖；恢复值始终来自启动前快照，不写死默认值。
+- 行为包不再执行 `GameTest.register`、`/gametest run` 或创建 GameTest 结构，因此不会触发 GameTest 对 `doDayLightCycle`、`doMobSpawning`、`randomTickSpeed` 等全局游戏规则的临时覆盖；4.5.3 的 gamerule 恢复补偿逻辑也已删除。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
 - 插件不会在运行中的服务器里自动修改 `level.dat`。它会在 `plugins/bot/` 生成一个明确的离线补丁脚本，停服后用当前 Python 解释器执行即可启用 Beta APIs。
@@ -160,7 +160,7 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 - `/reload` 时使用经过认证的 `bot:shutdown` 清理远端 SimulatedPlayer 并释放旧 token。
 - heartbeat 超时后插件真正进入断开状态。
 - 坐标和列表按消息长度分批，避免撞 `/scriptevent` 2048 字符上限。
-- SimulatedPlayer 统一由长生命周期 GameTest 的 `Test.spawnSimulatedPlayer` 创建；GameTest 所需的 1×1×1 空结构由 Script API 在运行时创建并保存到 World，不再打包静态 `.mcstructure`。
+- SimulatedPlayer 统一由模块级 `GameTest.spawnSimulatedPlayer` standalone API 创建，不注册或运行 GameTest、不创建 `.mcstructure`，也不提供旧 Test-bound fallback。行为包握手会显式声明 standalone capability；不支持时插件 fail-close。
 
 ## 数据
 
