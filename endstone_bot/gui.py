@@ -98,7 +98,7 @@ class BotGUI:
             if session is None:
                 if fp.desired_online:
                     form.add_button(
-                        "§a整理背包\n临时借到你的背包中整理",
+                        "§a整理背包\n§f仅主背包，不含盔甲和副手",
                         on_click=lambda p: self._inventory_start(p, fp),
                     )
                     form.add_button(
@@ -121,7 +121,7 @@ class BotGUI:
                 form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
             elif own_session is not None and str(own_session.get("state", "")) == "BORROWED":
                 form.add_button(
-                    "§a完成背包整理\n归还假人背包并恢复你的原背包",
+                    "§a完成背包整理\n§f归还主背包并恢复你的原背包",
                     on_click=lambda p: self._inventory_done(p, fp),
                 )
         form.add_button(
