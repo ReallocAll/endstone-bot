@@ -11,6 +11,7 @@
 - 管理员可以给指定玩家单独提高上限，或一键解除全部限制，适合生电玩家/技术玩家。
 - `/bot` 直接打开玩家 GUI，适合 ClockMenu 只执行一个命令接入。
 - 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
+- 假人管理菜单支持“整理假人背包”：玩家与假人的 36 格主背包通过原生容器逐槽交换，玩家整理完成后再交换回去；玩家原背包会先写入持久化 NBT 事务备份，假人托管期间处于 spectator 且禁止移动/删除/三叉戟，异常状态默认 fail-close 而不是猜测性恢复。
 - 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
 - “移动到我这里”负责保存假人的位置和世界空间视线方向；“投掷三叉戟”只使用这个已保存姿态，不会再次把假人传送到操作者身上。三叉戟实现采用与 FlashFakePlayerPack 等同类 Bedrock 假人行为包一致的原生 SimulatedPlayer 路径：假人由长期 GameTest 的 `Test.spawnSimulatedPlayer` 创建，背包内已有三叉戟会临时换到快捷栏 0，执行 `useItemInSlot(0)`，10 tick 后 `stopUsingItem()`。“移动到我这里”会先移动到保存的位置/维度，再以假人头部为起点，沿保存的 `dx/dy/dz` 计算世界绝对目标；由于 Test-bound SimulatedPlayer 的控制器位置参数使用 GameTest 相对坐标，插件会通过 `activeTest.relativeLocation(worldTarget)` 转换后再调用 `lookAtLocation(..., LookDuration.UntilMove)` 同步完整 pitch/yaw。该朝向会保持到假人发生下一次移动；投掷阶段不会再次修改视角。投掷阶段不会再次移动或修改视角，只执行原生 `useItemInSlot(0)` / `stopUsingItem()`。投掷前如果假人当前实际位置 1.0 格欧氏距离内有其他玩家则拒绝。不会生成或补充物品，也不自行构造 projectile。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
@@ -63,6 +64,7 @@
 /bot remove <name>
 /bot tp <name>
 /bot trident <name>
+/bot inventory <name>
 ```
 
 管理员/控制台：
@@ -145,7 +147,7 @@ python plugins/bot/enable_beta.py
 
 Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并更新 `world_behavior_packs.json`。首次安装或 Pack 版本升级后仍需要完整重启一次。
 
-## Bridge protocol 2
+## Bridge protocol 3
 
 - Python → Behavior Pack 使用 `/scriptevent`；Behavior Pack → Python 使用内部 `/botbridge` 命令回调，payload 采用 UTF-8 hex（仅 `0-9a-f`），避免命令参数对 `%`、引号或空格的词法限制，并避免依赖 Script API 自发 `scriptevent` 是否再次进入 Endstone 的 `ScriptMessageEvent` hook。
 - `bot:hello` 建立随机 token；后续消息必须使用同一 token。
@@ -154,6 +156,7 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 - heartbeat 超时后插件真正进入断开状态。
 - 坐标和列表按消息长度分批，避免撞 `/scriptevent` 2048 字符上限。
 - SimulatedPlayer 统一由长生命周期 GameTest 的 `Test.spawnSimulatedPlayer` 创建；GameTest 所需的 1×1×1 空结构由 Script API 在运行时创建并保存到 World，不再打包静态 `.mcstructure`。
+- protocol 3 新增背包托管事务：双方 36 格主背包使用 `Container.swapItems()` 物理交换；交换失败会按已完成槽位反向回滚，回滚失败则保持锁定并要求人工检查。
 
 ## 数据
 
@@ -162,6 +165,8 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 - `enable_beta.py`：插件自动生成的显式离线 Beta APIs 补丁脚本。
 - `level_dat_backups/<world>/`：手动执行补丁脚本时创建的校验备份。
 - `player_limits.json`：玩家级例外。
+- `inventory_sessions.json`：未完成背包托管事务的持久化所有权日志。
+- `inventory_backups/`：最近 20 次完成/恢复事务的玩家与假人原背包 NBT 快照归档。
 
 写入均采用临时文件 + replace。
 
