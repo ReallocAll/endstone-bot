@@ -320,6 +320,7 @@ class InventorySessionStore:
             "bot_backup": None,
             "bot_held_slot": None,
             "bot_game_mode": "",
+            "player_game_mode": "",
         }
         self._sessions[str(fp.id)] = rec
         self._save()
@@ -339,6 +340,7 @@ class InventorySessionStore:
         *,
         bot_held_slot: int,
         bot_game_mode: str,
+        player_game_mode: str,
     ) -> dict[str, Any]:
         rec = self._find_mut(session_id)
         if rec.get("state") not in ("preparing", "rollback_pending"):
@@ -347,6 +349,7 @@ class InventorySessionStore:
         rec["bot_backup"] = bot_backup
         rec["bot_held_slot"] = max(0, min(8, int(bot_held_slot)))
         rec["bot_game_mode"] = str(bot_game_mode or "survival")
+        rec["player_game_mode"] = str(player_game_mode or "survival")
         rec["state"] = "prepared"
         rec["updated_at"] = int(time.time())
         self._save()
