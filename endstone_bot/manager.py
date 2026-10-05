@@ -168,6 +168,8 @@ class FakeBotManager:
             return False, "该操作只能由在线玩家执行。"
         if self.inventory_session(fp) is not None:
             return False, "该假人的背包已经处于整理事务中。"
+        if not fp.desired_online:
+            return False, "假人当前处于手动下线状态，请先上线后再整理背包。"
         _, player_uuid, player_name = self._player_identity(sender)
         if self.inventory_journal.get_for_player(player_uuid, player_name) is not None:
             return False, "你已经有一个未完成的假人背包整理事务。"
