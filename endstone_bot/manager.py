@@ -303,6 +303,9 @@ class FakeBotManager:
         if not self._bridge.active:
             return
         for fp in list(self.bots.values()):
+            session = self.inventory_session(fp)
+            if session is not None and str(session.get("state", "")) == "manual_review":
+                continue
             if fp.sim_spawn_confirmed or fp.is_recently_seen():
                 continue
             self.spawn(fp)
