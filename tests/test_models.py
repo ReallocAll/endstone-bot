@@ -42,6 +42,29 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(fp.yaw, 91.25)
         self.assertEqual(fp.to_record()["rotation"], [-23.5, 91.25])
 
+    def test_desired_online_defaults_true_and_round_trips(self):
+        legacy = FakePlayer.from_record({
+            "id": "legacy",
+            "name": "LegacyBot",
+            "ownerName": "Alice",
+            "ownerUuid": "u",
+            "location": [0, 64, 0],
+            "dimension": "overworld",
+        })
+        self.assertTrue(legacy.desired_online)
+
+        offline = FakePlayer.from_record({
+            "id": "offline",
+            "name": "OfflineBot",
+            "ownerName": "Alice",
+            "ownerUuid": "u",
+            "location": [0, 64, 0],
+            "dimension": "overworld",
+            "desiredOnline": False,
+        })
+        self.assertFalse(offline.desired_online)
+        self.assertFalse(offline.to_record()["desiredOnline"])
+
     def test_view_direction_round_trips(self):
         fp = FakePlayer.from_record({
             "id": "v",
