@@ -102,6 +102,14 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(commands[0].startswith("scriptevent bot:inventory_begin "))
         self.assertIn('"s":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"', commands[0])
 
+        self.assertTrue(
+            bridge.send_bridge(
+                "inventory_ready",
+                {"n": "Bot", "r": "Player", "s": "a" * 32},
+            )
+        )
+        self.assertTrue(commands[1].startswith("scriptevent bot:inventory_ready "))
+
     def test_trident_action_dispatches_script_event(self):
         commands = []
         bridge = BridgeManager(Logger(), lambda command: commands.append(command) or True)
