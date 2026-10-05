@@ -25,6 +25,8 @@ const simulatedPlayers = new Map();
 const tridentBusy = new Set();
 const deadPlayers = new Set();
 const desiredPoses = new Map();
+const DRAIN_WARN_TICKS = 200;
+let drainState = null;
 
 function sourceKind(event) {
     try {
@@ -70,6 +72,98 @@ function dimensionId(value) {
 
 function getDimension(value) {
     return world.getDimension(dimensionId(value));
+}
+
+function worldHasExactPlayerName(name) {
+    try {
+        if (typeof world.getAllPlayers !== "function") return null;
+        return world.getAllPlayers().some((player) => {
+            try {
+                return String(player.name || "") === name;
+            } catch (_) {
+                return false;
+            }
+        });
+    } catch (_) {
+        return null;
+    }
+}
+
+function cleanupTrackedSim(name, sim) {
+    if (simulatedPlayers.get(name) === sim) simulatedPlayers.delete(name);
+    tridentBusy.delete(name);
+    deadPlayers.delete(name);
+    desiredPoses.delete(name);
+}
+
+function simStillAttached(name, sim) {
+    try {
+        if (sim && sim.isValid) return true;
+    } catch (_) {}
+
+    const present = worldHasExactPlayerName(name);
+    return present === true;
+}
+
+function pollDrain(elapsedTicks = 0) {
+    if (!drainState) return;
+
+    const remaining = [];
+    for (const [name, sim] of drainState.entries) {
+        if (simStillAttached(name, sim)) {
+            try { sim.disconnect(); } catch (_) {}
+            remaining.push([name, sim]);
+            continue;
+        }
+        cleanupTrackedSim(name, sim);
+    }
+    drainState.entries = remaining;
+
+    if (remaining.length === 0) {
+        const { total, releaseToken } = drainState;
+        if (releaseToken) {
+            reply("bot:shutdown_ack", { count: total });
+        } else {
+            reply("bot:cleared", { count: total });
+        }
+        drainState = null;
+        if (releaseToken) bridgeToken = "";
+        return;
+    }
+
+    if (elapsedTicks >= DRAIN_WARN_TICKS && !drainState.warned) {
+        drainState.warned = true;
+        console.warn(
+            `[EndstoneBot] SimulatedPlayer drain is still waiting for ${remaining.length} player(s); refusing new session until they leave`
+        );
+    }
+
+    system.runTimeout(
+        () => pollDrain(elapsedTicks + (elapsedTicks >= DRAIN_WARN_TICKS ? 20 : 1)),
+        elapsedTicks >= DRAIN_WARN_TICKS ? 20 : 1,
+    );
+}
+
+function beginDrain(releaseToken) {
+    if (drainState) return;
+
+    const entries = Array.from(simulatedPlayers.entries());
+    drainState = {
+        entries,
+        total: entries.length,
+        releaseToken: Boolean(releaseToken),
+        warned: false,
+    };
+
+    for (const [, sim] of entries) {
+        try { sim.disconnect(); } catch (_) {}
+    }
+
+    if (entries.length === 0) {
+        pollDrain(0);
+        return;
+    }
+    system.runTimeout(() => pollDrain(1), 1);
 }
 
 function rememberPose(req) {
@@ -283,6 +377,16 @@ function doSpawn(req) {
         tridentBusy.delete(name);
     }
 
+    if (drainState) {
+        reply("bot:error", { n: name, e: "SimulatedPlayer drain in progress" });
+        return;
+    }
+
+    if (worldHasExactPlayerName(name) === true) {
+        reply("bot:error", { n: name, e: "requested player name is still occupied" });
+        return;
+    }
+
     let sim = null;
     try {
         sim = spawnStandaloneSimulatedPlayer(pose);
@@ -293,6 +397,17 @@ function doSpawn(req) {
 
     if (!sim) {
         reply("bot:error", { n: name, e: "GameTest.spawnSimulatedPlayer returned null" });
+        return;
+    }
+
+    let actualName = "";
+    try { actualName = String(sim.name || ""); } catch (_) {}
+    if (actualName && actualName !== name) {
+        try { sim.disconnect(); } catch (_) {}
+        reply("bot:error", {
+            n: name,
+            e: `spawn returned renamed SimulatedPlayer "${actualName}"; refusing duplicate`,
+        });
         return;
     }
 
@@ -626,17 +741,11 @@ function doThrowTrident(req) {
 }
 
 function clearAll() {
-    const entries = Array.from(simulatedPlayers.entries());
-    for (const [name, sim] of entries) {
-        try {
-            sim.disconnect();
-        } catch (_) {}
-        simulatedPlayers.delete(name);
-        tridentBusy.delete(name);
-        deadPlayers.delete(name);
-        desiredPoses.delete(name);
-    }
-    reply("bot:cleared", { count: entries.length });
+    beginDrain(false);
+}
+
+function beginShutdown() {
+    beginDrain(true);
 }
 
 function sendList() {
@@ -736,8 +845,7 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
             clearAll();
             break;
         case "bot:shutdown":
-            clearAll();
-            system.runTimeout(() => { bridgeToken = ""; }, 1);
+            beginShutdown();
             break;
         default:
             break;
@@ -786,14 +894,24 @@ try {
 try {
     world.afterEvents.playerLeave.subscribe((event) => {
         const name = String(event.playerName || "");
-        if (simulatedPlayers.has(name)) {
-            // A death may also surface as a leave on some beta builds. The
-            // entityDie handler owns that lifecycle and is about to respawn it.
-            if (deadPlayers.has(name)) return;
-            simulatedPlayers.delete(name);
-            tridentBusy.delete(name);
-            reply("bot:lost", { n: name, reason: "left" });
+        const sim = simulatedPlayers.get(name);
+        if (!sim) return;
+
+        if (drainState) {
+            const draining = drainState.entries.some(
+                ([drainName, drainSim]) => drainName === name && drainSim === sim
+            );
+            if (draining) {
+                cleanupTrackedSim(name, sim);
+                return;
+            }
         }
+
+        // A death may also surface as a leave on some beta builds. The
+        // entityDie handler owns that lifecycle and is about to respawn it.
+        if (deadPlayers.has(name)) return;
+        cleanupTrackedSim(name, sim);
+        reply("bot:lost", { n: name, reason: "left" });
     });
 } catch (_) {}
 
