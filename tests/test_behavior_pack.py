@@ -64,6 +64,9 @@ class BehaviorPackTests(unittest.TestCase):
             "restoreGameRulesAfterGameTest",
         ):
             self.assertNotIn(forbidden, self.source)
+        self.assertNotIn("world.gameRules", self.source)
+        self.assertEqual(self.source.count(".runCommand("), 1)
+        self.assertIn("`botbridge ${eventName} ${encoded}`", self.source)
 
     def test_standalone_spawn_helper_uses_dimension_location(self):
         start = self.source.index("function spawnStandaloneSimulatedPlayer(req)")
@@ -109,7 +112,6 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("verifyViewSync(name, sim, pose)", self.source)
         self.assertIn("sim.headRotation.x", self.source)
         self.assertIn("sim.getViewDirection()", self.source)
-
 
     def test_throw_does_not_change_position_or_view(self):
         start = self.source.index("function doThrowTrident(req)")
