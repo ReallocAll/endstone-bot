@@ -208,6 +208,26 @@ class InventorySessionTests(unittest.TestCase):
             self.assertEqual(rec["state"], "manual_review")
             self.assertEqual(rec["restart_from_state"], "preparing")
 
+    def test_prepared_state_is_recoverable_after_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            player = FakePlayer()
+            bot = FakeBot()
+            store = module.InventorySessionStore(root, Logger())
+            rec = store.create(player, bot)
+            player.inventory.set_item(0, ItemStack("minecraft:diamond_sword", 1))
+            marked = store.mark_swapped(
+                rec["session_id"],
+                player,
+                bot_held_slot=0,
+                bot_game_mode="Survival",
+                player_game_mode="Survival",
+            )
+            self.assertEqual(marked["state"], "prepared")
+
+            reloaded = module.InventorySessionStore(root, Logger())
+            self.assertEqual(reloaded.for_bot_id(bot.id)["state"], "recovery_pending")
+
     def test_one_player_cannot_own_two_inventory_sessions(self):
         with tempfile.TemporaryDirectory() as td:
             store = module.InventorySessionStore(Path(td), Logger())
@@ -232,9 +252,10 @@ class InventorySessionTests(unittest.TestCase):
                 player,
                 bot_held_slot=2,
                 bot_game_mode="Survival",
+                player_game_mode="Survival",
             )
 
-            self.assertEqual(marked["state"], "editing")
+            self.assertEqual(marked["state"], "prepared")
             self.assertIsNotNone(marked["bot_backup"])
             self.assertEqual(marked["bot_backup"]["held_slot"], 2)
             self.assertEqual(marked["bot_backup"]["slots"][0]["type"], "minecraft:diamond_sword")
