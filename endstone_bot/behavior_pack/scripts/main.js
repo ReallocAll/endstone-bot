@@ -25,6 +25,7 @@ const simulatedPlayers = new Map();
 const tridentBusy = new Set();
 const deadPlayers = new Set();
 const desiredPoses = new Map();
+const MANAGED_TAG = "endstone_bot_managed";
 const DRAIN_MIN_TICKS = 5;
 const DRAIN_WARN_TICKS = 200;
 let drainState = null;
@@ -87,6 +88,79 @@ function worldHasExactPlayerName(name) {
         });
     } catch (_) {
         return null;
+    }
+}
+
+function isRuntimeSimulatedPlayer(player) {
+    if (!player) return false;
+    try {
+        if (
+            typeof GameTest.SimulatedPlayer === "function" &&
+            player instanceof GameTest.SimulatedPlayer
+        ) {
+            return true;
+        }
+    } catch (_) {}
+
+    try {
+        return (
+            typeof player.disconnect === "function" &&
+            typeof player.respawn === "function" &&
+            typeof player.useItemInSlot === "function"
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function isManagedSimulatedPlayer(player) {
+    if (!isRuntimeSimulatedPlayer(player)) return false;
+    try {
+        return Boolean(player.hasTag(MANAGED_TAG));
+    } catch (_) {
+        return false;
+    }
+}
+
+function markManagedSimulatedPlayer(sim) {
+    try {
+        if (!sim.hasTag(MANAGED_TAG)) sim.addTag(MANAGED_TAG);
+        return Boolean(sim.hasTag(MANAGED_TAG));
+    } catch (_) {
+        return false;
+    }
+}
+
+function findRuntimeSimulatedPlayer(name) {
+    try {
+        if (typeof world.getAllPlayers !== "function") return null;
+        for (const player of world.getAllPlayers()) {
+            let playerName = "";
+            try { playerName = String(player.name || ""); } catch (_) {}
+            if (playerName !== name) continue;
+            return isRuntimeSimulatedPlayer(player) ? player : null;
+        }
+    } catch (_) {}
+    return null;
+}
+
+function discoverManagedSimulatedPlayers() {
+    try {
+        if (typeof world.getAllPlayers !== "function") return 0;
+        let adopted = 0;
+        for (const player of world.getAllPlayers()) {
+            if (!isManagedSimulatedPlayer(player)) continue;
+            let name = "";
+            try { name = String(player.name || ""); } catch (_) {}
+            if (!name || simulatedPlayers.has(name)) continue;
+            simulatedPlayers.set(name, player);
+            deadPlayers.delete(name);
+            tridentBusy.delete(name);
+            adopted += 1;
+        }
+        return adopted;
+    } catch (_) {
+        return 0;
     }
 }
 
@@ -391,6 +465,24 @@ function doSpawn(req) {
         return;
     }
 
+    const existingWorldSim = findRuntimeSimulatedPlayer(name);
+    if (existingWorldSim) {
+        if (!markManagedSimulatedPlayer(existingWorldSim)) {
+            reply("bot:error", { n: name, e: "failed to mark existing SimulatedPlayer for reload adoption" });
+            return;
+        }
+        simulatedPlayers.set(name, existingWorldSim);
+        deadPlayers.delete(name);
+        tridentBusy.delete(name);
+        try {
+            teleportSim(existingWorldSim, pose);
+            reply("bot:spawned", { n: name, ok: true, existed: true, adopted: true });
+        } catch (e) {
+            reply("bot:error", { n: name, e: `adopted SimulatedPlayer teleport failed: ${String(e)}` });
+        }
+        return;
+    }
+
     if (worldHasExactPlayerName(name) === true) {
         reply("bot:error", { n: name, e: "requested player name is still occupied" });
         return;
@@ -417,6 +509,12 @@ function doSpawn(req) {
             n: name,
             e: `spawn returned renamed SimulatedPlayer "${actualName}"; refusing duplicate`,
         });
+        return;
+    }
+
+    if (!markManagedSimulatedPlayer(sim)) {
+        try { sim.disconnect(); } catch (_) {}
+        reply("bot:error", { n: name, e: "failed to mark SimulatedPlayer for reload adoption" });
         return;
     }
 
@@ -758,6 +856,7 @@ function beginShutdown() {
 }
 
 function sendList() {
+    discoverManagedSimulatedPlayers();
     const names = Array.from(simulatedPlayers.keys()).filter((name) => !deadPlayers.has(name));
     if (names.length === 0) {
         reply("bot:list_result", { reset: true, done: true, names: [] });

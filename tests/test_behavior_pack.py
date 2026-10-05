@@ -133,6 +133,33 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertNotIn("clearAll();", block)
         self.assertNotIn("bridgeToken = \"\"", block)
 
+    def test_reload_can_adopt_existing_simulated_player(self):
+        self.assertIn('const MANAGED_TAG = "endstone_bot_managed"', self.source)
+        self.assertIn("function isRuntimeSimulatedPlayer(player)", self.source)
+        self.assertIn("player instanceof GameTest.SimulatedPlayer", self.source)
+        self.assertIn('typeof player.disconnect === "function"', self.source)
+        self.assertIn('typeof player.respawn === "function"', self.source)
+        self.assertIn('typeof player.useItemInSlot === "function"', self.source)
+        self.assertIn("function markManagedSimulatedPlayer(sim)", self.source)
+        self.assertIn("function discoverManagedSimulatedPlayers()", self.source)
+        self.assertIn("discoverManagedSimulatedPlayers();", self.source)
+
+        start = self.source.index("function doSpawn(req)")
+        end = self.source.index("\nfunction finishRemove(", start)
+        block = self.source[start:end]
+        self.assertIn("findRuntimeSimulatedPlayer(name)", block)
+        self.assertIn("markManagedSimulatedPlayer(existingWorldSim)", block)
+        self.assertIn("simulatedPlayers.set(name, existingWorldSim)", block)
+        self.assertIn("adopted: true", block)
+        self.assertIn("teleportSim(existingWorldSim, pose)", block)
+
+    def test_discovery_only_adopts_tagged_simulated_players(self):
+        start = self.source.index("function discoverManagedSimulatedPlayers()")
+        end = self.source.index("\nfunction cleanupTrackedSim(", start)
+        block = self.source[start:end]
+        self.assertIn("isManagedSimulatedPlayer(player)", block)
+        self.assertIn("simulatedPlayers.set(name, player)", block)
+
     def test_spawn_refuses_occupied_or_auto_renamed_names(self):
         start = self.source.index("function doSpawn(req)")
         end = self.source.index("\nfunction finishRemove(", start)
