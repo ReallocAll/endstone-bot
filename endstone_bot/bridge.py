@@ -70,8 +70,8 @@ class BridgeManager:
         return self._send_raw("bot:list", {})
 
     def shutdown(self) -> bool:
-        """Gracefully clear remote bots and release the session token for /reload."""
-        if not self._ready:
+        """Best-effort remote drain before /reload, even after heartbeat staleness."""
+        if self._remote_protocol != BRIDGE_PROTOCOL:
             return False
         ok = self._send_raw("bot:shutdown", {})
         self._ready = False

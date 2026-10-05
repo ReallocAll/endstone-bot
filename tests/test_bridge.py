@@ -118,6 +118,16 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(parsed["data"]["n"], "测试假人")
         self.assertEqual(parsed["data"]["e"], "错误：三叉戟")
 
+    def test_shutdown_is_sent_after_bridge_staleness(self):
+        commands = []
+        bridge = BridgeManager(Logger(), lambda command: commands.append(command) or True)
+        bridge._remote_protocol = BRIDGE_PROTOCOL
+        bridge._ready = False
+
+        self.assertTrue(bridge.shutdown())
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(commands[0].startswith("scriptevent bot:shutdown "))
+
     def test_trident_action_dispatches_script_event(self):
         commands = []
         bridge = BridgeManager(Logger(), lambda command: commands.append(command) or True)

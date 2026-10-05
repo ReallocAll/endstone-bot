@@ -5,6 +5,23 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.6.1] - 2026-10-06
+
+### 修复
+
+- 修复执行 `/reload` 后旧 SimulatedPlayer 尚未完全注销就重新生成，导致 Bedrock 自动创建 `Name(1)`、`Name(2)` 等重复假人的竞态
+- `bot:shutdown` 现在进入 drain barrier：保留旧对象并持续等待其失效且原名字从世界玩家表释放，确认完成后才释放 bridge token
+- drain 至少保留 5 tick grace window；长时间未退出时 fail-close，拒绝新 bridge 会话而不是冒险生成重复假人
+- 新建前检查请求名字是否仍被占用；若 Bedrock 仍返回被自动改名的 SimulatedPlayer，立即断开并拒绝接管
+- bridge 即使已因 heartbeat 超时进入 stale 状态，`/reload` 时仍会 best-effort 发送 shutdown
+- 普通 clear drain 在随后发生 reload 时会自动升级为 shutdown drain
+
+### 维护
+
+- Behavior Pack 提升至 4.3.1
+- 增加 reload drain、名字占用/自动改名拒绝及 stale shutdown 回归测试
+
+
 ## [4.6.0] - 2026-10-05
 
 ### 重构
