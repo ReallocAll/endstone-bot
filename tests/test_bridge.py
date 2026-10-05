@@ -86,6 +86,22 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(parsed["data"]["n"], "测试假人")
         self.assertEqual(parsed["data"]["e"], "错误：三叉戟")
 
+    def test_inventory_actions_dispatch_authenticated_script_events(self):
+        commands = []
+        bridge = BridgeManager(Logger(), lambda command: commands.append(command) or True)
+        bridge._ready = True
+        bridge._last_seen_at = time.monotonic()
+
+        self.assertEqual(BRIDGE_PROTOCOL, 3)
+        self.assertTrue(
+            bridge.send_bridge(
+                "inventory_begin",
+                {"n": "Bot", "r": "Player", "s": "a" * 32},
+            )
+        )
+        self.assertTrue(commands[0].startswith("scriptevent bot:inventory_begin "))
+        self.assertIn('"s":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"', commands[0])
+
     def test_trident_action_dispatches_script_event(self):
         commands = []
         bridge = BridgeManager(Logger(), lambda command: commands.append(command) or True)
