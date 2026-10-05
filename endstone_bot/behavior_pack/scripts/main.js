@@ -1268,6 +1268,16 @@ try {
             inventory_session: lease ? String(lease.session || "") : "",
         });
 
+        if (lease) {
+            // Death can create world drops. Never respawn/reconstruct from
+            // backups automatically while those drops may still exist.
+            inventoryLeases.delete(name);
+            try { sim.disconnect(); } catch (_) {}
+            simulatedPlayers.delete(name);
+            deadPlayers.delete(name);
+            return;
+        }
+
         const pose = desiredPoses.get(name);
         if (!pose) return;
         system.runTimeout(() => {
@@ -1284,11 +1294,17 @@ try {
         const name = String(event.playerName || "");
         if (simulatedPlayers.has(name)) {
             // A death may also surface as a leave on some beta builds. The
-            // entityDie handler owns that lifecycle and is about to respawn it.
+            // entityDie handler owns that lifecycle.
             if (deadPlayers.has(name)) return;
+            const lease = inventoryLeases.get(name);
             simulatedPlayers.delete(name);
             tridentBusy.delete(name);
-            reply("bot:lost", { n: name, reason: "left" });
+            inventoryLeases.delete(name);
+            reply("bot:lost", {
+                n: name,
+                reason: "left",
+                inventory_session: lease ? String(lease.session || "") : "",
+            });
         }
     });
 } catch (_) {}
@@ -1309,10 +1325,16 @@ system.runInterval(() => {
         }
         try {
             if (!sim.isValid) {
+                const lease = inventoryLeases.get(name);
                 simulatedPlayers.delete(name);
                 deadPlayers.delete(name);
                 tridentBusy.delete(name);
-                reply("bot:lost", { n: name, reason: "invalid" });
+                inventoryLeases.delete(name);
+                reply("bot:lost", {
+                    n: name,
+                    reason: "invalid",
+                    inventory_session: lease ? String(lease.session || "") : "",
+                });
                 continue;
             }
             const loc = sim.location;
@@ -1324,10 +1346,16 @@ system.runInterval(() => {
                 d: sim.dimension ? sim.dimension.id : "minecraft:overworld",
             });
         } catch (_) {
+            const lease = inventoryLeases.get(name);
             simulatedPlayers.delete(name);
             deadPlayers.delete(name);
             tridentBusy.delete(name);
-            reply("bot:lost", { n: name, reason: "position_error" });
+            inventoryLeases.delete(name);
+            reply("bot:lost", {
+                n: name,
+                reason: "position_error",
+                inventory_session: lease ? String(lease.session || "") : "",
+            });
         }
     }
     flushPositions(report);
