@@ -165,33 +165,44 @@ class InventoryJournal:
             self.available = False
             self.logger.error(f"读取 inventory_journal.json 失败，背包整理功能已 fail-close 禁用: {exc}")
 
-    def save(self) -> None:
+    def _write_sessions(self, sessions: dict[str, dict[str, Any]]) -> None:
         if not self.available:
             raise RuntimeError("inventory journal is unavailable")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        payload = {"version": self.VERSION, "sessions": self.sessions}
-        with tmp.open("w", encoding="utf-8") as fp:
-            json.dump(payload, fp, ensure_ascii=False, indent=2, sort_keys=True)
-            fp.flush()
-            os.fsync(fp.fileno())
-        os.replace(tmp, self.path)
+        payload = {"version": self.VERSION, "sessions": sessions}
         try:
-            dir_fd = os.open(str(self.path.parent), os.O_RDONLY)
+            with tmp.open("w", encoding="utf-8") as fp:
+                json.dump(payload, fp, ensure_ascii=False, indent=2, sort_keys=True)
+                fp.flush()
+                os.fsync(fp.fileno())
+            os.replace(tmp, self.path)
             try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+                dir_fd = os.open(str(self.path.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except Exception:
+                pass
         except Exception:
-            pass
+            self.available = False
+            raise
+
+    def save(self) -> None:
+        self._write_sessions(self.sessions)
 
     def put(self, bot_id: str, session: dict[str, Any]) -> None:
-        self.sessions[str(bot_id)] = dict(session)
-        self.save()
+        updated = dict(self.sessions)
+        updated[str(bot_id)] = dict(session)
+        self._write_sessions(updated)
+        self.sessions = updated
 
     def remove(self, bot_id: str) -> None:
-        self.sessions.pop(str(bot_id), None)
-        self.save()
+        updated = dict(self.sessions)
+        updated.pop(str(bot_id), None)
+        self._write_sessions(updated)
+        self.sessions = updated
 
     def get_for_bot(self, bot_id: str) -> dict[str, Any] | None:
         value = self.sessions.get(str(bot_id))
