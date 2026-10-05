@@ -78,6 +78,7 @@ class BridgeManager:
             "teleport": "bot:teleport",
             "trident": "bot:trident",
             "inventory_begin": "bot:inventory_begin",
+            "inventory_ready": "bot:inventory_ready",
             "inventory_finish": "bot:inventory_finish",
             "inventory_recover": "bot:inventory_recover",
             "inventory_recovery_finalize": "bot:inventory_recovery_finalize",
