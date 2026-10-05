@@ -61,7 +61,7 @@ class FakeBotManager:
     def save(self) -> None:
         try:
             tmp = self._db_path.with_suffix(".json.tmp")
-            payload = {"version": 7, "bots": [fp.to_record() for fp in self.bots.values()]}
+            payload = {"version": 8, "bots": [fp.to_record() for fp in self.bots.values()]}
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self._db_path)
             self._dirty = False
@@ -690,6 +690,8 @@ class FakeBotManager:
         return True, f"已在 {dimension} ({x:.1f}, {y:.1f}, {z:.1f}) 创建假人 {fp.name}。"
 
     def spawn(self, fp: FakePlayer, force: bool = False) -> bool:
+        if not fp.desired_online and not self.inventory_locked(fp):
+            return False
         if not self._bridge.active:
             return False
         now = time.monotonic()
@@ -703,7 +705,7 @@ class FakeBotManager:
         if not self._bridge.active:
             return
         for fp in list(self.bots.values()):
-            if self.inventory_locked(fp):
+            if self.inventory_locked(fp) or not fp.desired_online:
                 continue
             if fp.sim_spawn_confirmed or fp.is_recently_seen():
                 continue
@@ -714,6 +716,12 @@ class FakeBotManager:
         remote = {name.lower(): name for name in names}
         for lower, fp in known.items():
             if lower in remote:
+                if not fp.desired_online and not self.inventory_locked(fp):
+                    self._bridge.send_bridge("remove", {"n": remote[lower]})
+                    fp.sim_spawn_confirmed = False
+                    fp.sim_has_position = False
+                    fp.sim_last_seen_at = 0.0
+                    continue
                 fp.sim_spawn_confirmed = True
             elif not fp.is_recently_seen():
                 fp.sim_spawn_confirmed = False
@@ -724,10 +732,17 @@ class FakeBotManager:
 
     def mark_spawned(self, name: str, ok: bool) -> None:
         fp = self.get_by_name(name)
-        if fp is not None:
-            fp.sim_spawn_confirmed = bool(ok)
-            if ok and self.inventory_locked(fp):
-                self.on_bot_spawned_for_inventory(name)
+        if fp is None:
+            return
+        if ok and not fp.desired_online and not self.inventory_locked(fp):
+            fp.sim_spawn_confirmed = False
+            fp.sim_has_position = False
+            fp.sim_last_seen_at = 0.0
+            self._bridge.send_bridge("remove", {"n": fp.name})
+            return
+        fp.sim_spawn_confirmed = bool(ok)
+        if ok and self.inventory_locked(fp):
+            self.on_bot_spawned_for_inventory(name)
 
     def update_position(self, name: str, x: Any, y: Any, z: Any, dimension: str) -> None:
         fp = self.get_by_name(name)
@@ -745,7 +760,7 @@ class FakeBotManager:
             return
         threshold_sq = self._settings.guard_distance ** 2
         for fp in list(self.bots.values()):
-            if self.inventory_locked(fp):
+            if self.inventory_locked(fp) or not fp.desired_online:
                 continue
             if not fp.sim_has_position or not fp.is_recently_seen():
                 continue
@@ -760,6 +775,8 @@ class FakeBotManager:
             return False, "你没有权限管理该假人。"
         if self.inventory_locked(fp):
             return False, "假人背包正在整理，当前位置和行为已锁定。"
+        if not fp.desired_online:
+            return False, "假人当前处于手动下线状态，请先上线。"
         if not self._bridge.active:
             return False, "行为包桥接未就绪。"
         if not self._capture_player_pose(sender, fp):
@@ -773,6 +790,8 @@ class FakeBotManager:
             return False, "你没有权限管理该假人。"
         if self.inventory_locked(fp):
             return False, "假人背包正在整理，不能执行三叉戟操作。"
+        if not fp.desired_online:
+            return False, "假人当前处于手动下线状态，请先上线。"
         if not self._bridge.active:
             return False, "行为包桥接未就绪。"
 
@@ -798,6 +817,37 @@ class FakeBotManager:
         self.save()
         self._bridge.send_bridge("teleport", self._pose_payload(fp))
         return True, f"已移动 {fp.name}。"
+
+    def set_online(self, sender: Any, fp: FakePlayer, online: bool) -> tuple[bool, str]:
+        if not self.can_manage(sender, fp):
+            return False, "你没有权限管理该假人。"
+        if self.inventory_locked(fp):
+            return False, "假人背包正在整理，不能切换上下线状态。"
+
+        desired = bool(online)
+        fp.desired_online = desired
+        if not desired:
+            fp.sim_spawn_confirmed = False
+            fp.sim_has_position = False
+            fp.sim_last_seen_at = 0.0
+        self.save()
+
+        if not self._bridge.active:
+            return True, (
+                f"已将 {fp.name} 设置为{'上线' if desired else '下线'}状态；"
+                "行为包桥接恢复后会自动执行。"
+            )
+
+        if desired:
+            if fp.sim_spawn_confirmed or fp.is_recently_seen():
+                return True, f"{fp.name} 已经在线。"
+            if self.spawn(fp, force=True):
+                return True, f"已请求 {fp.name} 上线。"
+            return True, f"{fp.name} 已设置为上线，自动补生会继续重试。"
+
+        if self._bridge.send_bridge("remove", {"n": fp.name}):
+            return True, f"已请求 {fp.name} 下线。"
+        return True, f"{fp.name} 已设置为下线；桥接恢复后会强制下线。"
 
     def remove(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
         if not self.can_manage(sender, fp):
@@ -836,6 +886,8 @@ class FakeBotManager:
             if state == "BORROWED":
                 return "背包整理中"
             return "背包事务处理中"
+        if not fp.desired_online:
+            return "手动下线"
         if not self._bridge.active:
             return "桥接离线"
         if fp.is_recently_seen() or fp.sim_spawn_confirmed:
