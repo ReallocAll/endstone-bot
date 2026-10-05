@@ -157,7 +157,7 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 - Python → Behavior Pack 使用 `/scriptevent`；Behavior Pack → Python 使用内部 `/botbridge` 命令回调，payload 采用 UTF-8 hex（仅 `0-9a-f`），避免命令参数对 `%`、引号或空格的词法限制，并避免依赖 Script API 自发 `scriptevent` 是否再次进入 Endstone 的 `ScriptMessageEvent` hook。
 - `bot:hello` 建立随机 token；后续消息必须使用同一 token。
 - 优先接受 `sourceType=Server`；兼容 Endstone `ConsoleCommandSender` 产生的无实体/无方块/NPC 来源命令，同时拒绝玩家、实体、命令方块和 NPC 来源。
-- `/reload` 时使用经过认证的 `bot:shutdown` 清理远端 SimulatedPlayer 并释放旧 token。
+- `/reload` 时使用经过认证的 `bot:shutdown` 进入 SimulatedPlayer drain barrier：先断开旧假人，等待对象失效且原名字从世界玩家表释放后才释放旧 token；新 bridge 在 drain 完成前不会建立，避免 Bedrock 因名字仍占用而生成 `Name(1)` / `Name(2)`。
 - heartbeat 超时后插件真正进入断开状态。
 - 坐标和列表按消息长度分批，避免撞 `/scriptevent` 2048 字符上限。
 - SimulatedPlayer 统一由模块级 `GameTest.spawnSimulatedPlayer` standalone API 创建，不注册或运行 GameTest、不创建 `.mcstructure`，也不提供旧 Test-bound fallback。行为包握手会显式声明 standalone capability；不支持时插件 fail-close。
