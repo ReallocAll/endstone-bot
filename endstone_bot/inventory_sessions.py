@@ -224,8 +224,16 @@ class InventorySessionStore:
                 continue
             rec = dict(raw)
             # A plugin/server restart destroys the behavior-pack side lease.
-            # Treat every unfinished record as recovery-required.
-            rec["state"] = "recovery_pending"
+            # Only "editing" proves that the first physical swap completed and
+            # the plugin persisted that fact. Transitional states are ambiguous:
+            # the Script API may have swapped already while the callback was lost.
+            # Never guess ownership in that case; fail closed for manual review.
+            previous_state = str(rec.get("state", ""))
+            if previous_state in ("editing", "recovery_pending"):
+                rec["state"] = "recovery_pending"
+            else:
+                rec["state"] = "manual_review"
+                rec["restart_from_state"] = previous_state
             self._sessions[str(bot_id)] = rec
         if self._sessions:
             self._save()
