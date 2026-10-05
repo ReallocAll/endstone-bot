@@ -17,6 +17,8 @@ const PROTOCOL = 2;
 const MAX_MESSAGE_CHARS = 1400;
 const standaloneSimulatedPlayerSupported =
     typeof GameTest.spawnSimulatedPlayer === "function";
+const survivalGameMode =
+    GameMode.Survival ?? GameMode.survival ?? "Survival";
 let bridgeToken = "";
 
 const simulatedPlayers = new Map();
@@ -197,7 +199,7 @@ function spawnStandaloneSimulatedPlayer(req) {
             z: Number(req.z),
         },
         String(req.n),
-        GameMode.Survival,
+        survivalGameMode,
     );
 }
 
