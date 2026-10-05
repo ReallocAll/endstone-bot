@@ -885,6 +885,16 @@ try {
         const sim = simulatedPlayers.get(name);
         if (!sim) return;
 
+        if (drainState) {
+            const draining = drainState.entries.some(
+                ([drainName, drainSim]) => drainName === name && drainSim === sim
+            );
+            if (draining) {
+                try { sim.disconnect(); } catch (_) {}
+                return;
+            }
+        }
+
         deadPlayers.add(name);
         tridentBusy.delete(name);
         reply("bot:lost", { n: name, reason: "dead" });
@@ -930,7 +940,7 @@ system.runInterval(() => {
 }, 100);
 
 system.runInterval(() => {
-    if (!bridgeToken || simulatedPlayers.size === 0) return;
+    if (!bridgeToken || simulatedPlayers.size === 0 || drainState) return;
     const report = [];
     for (const [name, sim] of Array.from(simulatedPlayers.entries())) {
         if (isDeadSim(name, sim)) {
