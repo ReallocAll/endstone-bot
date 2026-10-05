@@ -156,7 +156,6 @@ function orientSim(sim, req) {
         };
 
         try {
-            // Standalone SimulatedPlayer controller locations are ordinary
             // Standalone controller locations are ordinary world coordinates.
             sim.lookAtLocation(
                 target,
