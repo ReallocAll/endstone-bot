@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import time
 from pathlib import Path
@@ -227,7 +228,7 @@ class InventorySessionStore:
             # the Script API may have swapped already while the callback was lost.
             # Never guess ownership in that case; fail closed for manual review.
             previous_state = str(rec.get("state", ""))
-            if previous_state in ("editing", "recovery_pending"):
+            if previous_state in ("prepared", "editing", "recovery_pending"):
                 rec["state"] = "recovery_pending"
             else:
                 rec["state"] = "manual_review"
@@ -236,14 +237,35 @@ class InventorySessionStore:
         if self._sessions:
             self._save()
 
+    @staticmethod
+    def _atomic_write_json(path: Path, data: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        with tmp.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+        # Best-effort directory fsync makes the rename durable on POSIX. Windows
+        # does not expose O_DIRECTORY, so the file fsync + atomic replace is the
+        # strongest portable path available here.
+        flags = getattr(os, "O_DIRECTORY", 0)
+        if flags:
+            try:
+                fd = os.open(str(path.parent), os.O_RDONLY | flags)
+            except OSError:
+                return
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
     def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps({"version": 1, "sessions": self._sessions}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        self._atomic_write_json(
+            self._path,
+            {"version": 1, "sessions": self._sessions},
         )
-        tmp.replace(self._path)
 
     def all(self) -> list[dict[str, Any]]:
         return [dict(v) for v in self._sessions.values()]
@@ -325,7 +347,7 @@ class InventorySessionStore:
         rec["bot_backup"] = bot_backup
         rec["bot_held_slot"] = max(0, min(8, int(bot_held_slot)))
         rec["bot_game_mode"] = str(bot_game_mode or "survival")
-        rec["state"] = "editing"
+        rec["state"] = "prepared"
         rec["updated_at"] = int(time.time())
         self._save()
         return dict(rec)
@@ -367,9 +389,7 @@ class InventorySessionStore:
         try:
             self._archive_dir.mkdir(parents=True, exist_ok=True)
             path = self._archive_dir / f"{session_id}.json"
-            tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(archived, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(path)
+            self._atomic_write_json(path, archived)
             files = sorted(
                 self._archive_dir.glob("*.json"),
                 key=lambda p: p.stat().st_mtime,
