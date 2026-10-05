@@ -229,8 +229,9 @@ class FakeBotManager:
             fp.sim_has_position = False
             fp.sim_last_seen_at = 0.0
             return True, (
-                f"{fp.name} 已锁定并正在下线。现在你的背包就是假人背包；"
-                "整理完成并选中希望假人手持的热栏槽后，点击“完成背包整理”。"
+                f"{fp.name} 已锁定并正在下线。现在你的主背包就是假人的主背包；"
+                "盔甲和副手不会同步。整理完成后，请先把希望假人拿着的物品拿在手上，"
+                "然后使用 /bot 重新打开假人菜单并点击“完成背包整理”。"
             )
         except Exception as exc:
             self._logger.error(f"开始背包整理失败 [{fp.name}]: {exc}")
@@ -430,7 +431,8 @@ class FakeBotManager:
             self.inventory_journal.remove(fp.id)
             self._notify_session_player(
                 session,
-                f"{fp.name} 的背包已归还，你原来的背包也已完整恢复。当前热栏选择已同步为假人的主手槽。",
+                f"{fp.name} 的主背包已归还，你原来的主背包也已恢复；盔甲和副手始终未参与同步。"
+                "假人现在会拿着你完成整理时手上拿着的物品。",
             )
         except Exception as exc:
             self._logger.error(f"完成背包整理失败 [{fp.name}]，事务保持锁定: {exc}")
@@ -469,7 +471,10 @@ class FakeBotManager:
         if state in {"PREPARED", "BOT_CLEARED"}:
             if current_digest == str(session.get("bot_digest")):
                 self._put_inventory_session(fp, session, "BORROWED")
-                player.send_message(f"§e恢复了 {fp.name} 的未完成背包整理事务；整理完成后请执行归还。")
+                player.send_message(
+                    f"§e恢复了 {fp.name} 的未完成背包整理。盔甲和副手不会同步；"
+                    "整理完成后，把希望假人拿着的物品拿在手上，再使用 /bot 重新打开假人菜单并完成归还。"
+                )
                 return
             if current_digest == str(session.get("player_digest")):
                 self._put_inventory_session(fp, session, "ROLLBACK_BOT_ONLY_WAIT_SPAWN")
@@ -485,7 +490,10 @@ class FakeBotManager:
             # The bot must stay offline while its inventory is borrowed.
             if self._online_player_named(fp.name) is not None and self._bridge.active:
                 self._bridge.send_bridge("remove", {"n": fp.name})
-            player.send_message(f"§e你仍在整理 {fp.name} 的背包；完成后请点击“完成背包整理”。")
+            player.send_message(
+                f"§e你仍在整理 {fp.name} 的主背包。盔甲和副手不会同步；"
+                "整理完成后，把希望假人拿着的物品拿在手上，再使用 /bot 重新打开假人菜单并点击“完成背包整理”。"
+            )
             return
 
         if state in {"ROLLBACK_BOT_ONLY_WAIT_SPAWN", "ROLLBACK_FULL_WAIT_SPAWN"}:
