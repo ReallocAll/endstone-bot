@@ -748,6 +748,10 @@ class FakeBotManager:
         fp = self.get_by_name(name)
         if fp is None:
             return
+        if not fp.desired_online and not self.inventory_locked(fp):
+            if self._bridge.active:
+                self._bridge.send_bridge("remove", {"n": fp.name})
+            return
         try:
             nx, ny, nz = float(x), float(y), float(z)
         except (TypeError, ValueError):
