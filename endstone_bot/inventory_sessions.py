@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -267,6 +268,16 @@ class InventorySessionStore:
             {"version": 1, "sessions": self._sessions},
         )
 
+    def _commit_sessions(self, candidate: dict[str, dict[str, Any]]) -> None:
+        # Write the complete next journal state durably before exposing it to
+        # the live state machine. A disk failure therefore leaves both memory
+        # and disk on the previous ownership state.
+        self._atomic_write_json(
+            self._path,
+            {"version": 1, "sessions": candidate},
+        )
+        self._sessions = candidate
+
     def all(self) -> list[dict[str, Any]]:
         return [dict(v) for v in self._sessions.values()]
 
@@ -322,15 +333,17 @@ class InventorySessionStore:
             "bot_game_mode": "",
             "player_game_mode": "",
         }
-        self._sessions[str(fp.id)] = rec
-        self._save()
+        candidate = copy.deepcopy(self._sessions)
+        candidate[str(fp.id)] = rec
+        self._commit_sessions(candidate)
         return dict(rec)
 
     def abort_before_swap(self, session_id: str) -> None:
-        for bot_id, rec in list(self._sessions.items()):
+        for bot_id, rec in self._sessions.items():
             if rec.get("session_id") == session_id and rec.get("state") == "preparing":
-                self._sessions.pop(bot_id, None)
-                self._save()
+                candidate = copy.deepcopy(self._sessions)
+                candidate.pop(bot_id, None)
+                self._commit_sessions(candidate)
                 return
 
     def mark_swapped(
@@ -342,28 +355,32 @@ class InventorySessionStore:
         bot_game_mode: str,
         player_game_mode: str,
     ) -> dict[str, Any]:
-        rec = self._find_mut(session_id)
-        if rec.get("state") not in ("preparing", "rollback_pending"):
-            raise InventorySnapshotError(f"unexpected inventory session state: {rec.get('state')}")
+        bot_id, current = self._find_entry(session_id)
+        if current.get("state") not in ("preparing", "rollback_pending"):
+            raise InventorySnapshotError(f"unexpected inventory session state: {current.get('state')}")
         bot_backup = capture_player_inventory(player, held_slot=bot_held_slot)
+        candidate = copy.deepcopy(self._sessions)
+        rec = candidate[bot_id]
         rec["bot_backup"] = bot_backup
         rec["bot_held_slot"] = max(0, min(8, int(bot_held_slot)))
         rec["bot_game_mode"] = str(bot_game_mode or "survival")
         rec["player_game_mode"] = str(player_game_mode or "survival")
         rec["state"] = "prepared"
         rec["updated_at"] = int(time.time())
-        self._save()
+        self._commit_sessions(candidate)
         return dict(rec)
 
     def set_state(self, session_id: str, state: str) -> dict[str, Any]:
-        rec = self._find_mut(session_id)
+        bot_id, _ = self._find_entry(session_id)
+        candidate = copy.deepcopy(self._sessions)
+        rec = candidate[bot_id]
         rec["state"] = str(state)
         rec["updated_at"] = int(time.time())
-        self._save()
+        self._commit_sessions(candidate)
         return dict(rec)
 
     def verify_player_restored(self, session_id: str, player: Any) -> bool:
-        rec = self._find_mut(session_id)
+        _, rec = self._find_entry(session_id)
         current = capture_player_inventory(player)
         expected = rec.get("player_backup")
         if not isinstance(expected, dict):
@@ -371,7 +388,7 @@ class InventorySessionStore:
         return snapshot_digest(current) == snapshot_digest(expected)
 
     def restore_player_backup(self, session_id: str, player: Any) -> None:
-        rec = self._find_mut(session_id)
+        _, rec = self._find_entry(session_id)
         snapshot = rec.get("player_backup")
         if not isinstance(snapshot, dict):
             raise InventorySnapshotError("player backup is missing")
@@ -402,11 +419,12 @@ class InventorySessionStore:
                 stale.unlink(missing_ok=True)
         except Exception as exc:
             self._logger.warning(f"归档背包托管快照失败: {exc}")
-        self._sessions.pop(bot_id, None)
-        self._save()
+        candidate = copy.deepcopy(self._sessions)
+        candidate.pop(bot_id, None)
+        self._commit_sessions(candidate)
 
-    def _find_mut(self, session_id: str) -> dict[str, Any]:
-        for rec in self._sessions.values():
+    def _find_entry(self, session_id: str) -> tuple[str, dict[str, Any]]:
+        for bot_id, rec in self._sessions.items():
             if rec.get("session_id") == session_id:
-                return rec
+                return bot_id, rec
         raise InventorySnapshotError("inventory session not found")
