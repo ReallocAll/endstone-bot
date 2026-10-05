@@ -5,6 +5,21 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.5.3] - 2026-10-05
+
+### 修复
+
+- 修复长期 SimulatedPlayer GameTest 启动后会把世界游戏规则留在 GameTest 状态的问题
+- GameTest 启动前完整快照当前 `world.gameRules`，启动后延迟 2 tick 只恢复实际被 GameTest 改动的规则
+- 不硬编码默认游戏规则，因此服务器原本自定义的 `doDayLightCycle`、`doMobSpawning`、`randomTickSpeed` 等值会原样保留
+- 仅当检测到 GameTest 确实改动规则时输出一次恢复日志
+
+### 维护
+
+- Behavior Pack 提升至 4.2.9，确保已有世界部署 GameTest gamerule 修复
+- 增加行为包版本一致性与 GameTest 游戏规则恢复回归测试
+
+
 ## [4.5.2] - 2026-10-05
 
 ### 修复

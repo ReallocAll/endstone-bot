@@ -1,15 +1,29 @@
+import json
+import re
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "endstone_bot" / "behavior_pack" / "scripts" / "main.js"
+MANIFEST = ROOT / "endstone_bot" / "behavior_pack" / "manifest.json"
+PLUGIN = ROOT / "endstone_bot" / "plugin.py"
 
 
 class BehaviorPackTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = SCRIPT.read_text(encoding="utf-8")
+        cls.manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        cls.plugin_source = PLUGIN.read_text(encoding="utf-8")
+
+    def test_behavior_pack_version_matches_plugin_deployer(self):
+        header_version = self.manifest["header"]["version"]
+        module_version = self.manifest["modules"][0]["version"]
+        self.assertEqual(header_version, module_version)
+        match = re.search(r"BEHAVIOR_PACK_VERSION = \[(\d+), (\d+), (\d+)\]", self.plugin_source)
+        self.assertIsNotNone(match)
+        self.assertEqual(header_version, [int(x) for x in match.groups()])
 
     def test_trident_is_taken_from_inventory(self):
         self.assertIn('getComponent("minecraft:inventory")', self.source)
@@ -51,6 +65,32 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("try { sim.disconnect(); } catch (_) {}", block)
         self.assertIn("desiredPoses.delete(name)", block)
         self.assertIn("existing SimulatedPlayer teleport failed", block)
+
+    def test_gametest_restores_changed_gamerules(self):
+        self.assertIn("function snapshotGameRules()", self.source)
+        self.assertIn("function restoreGameRulesAfterGameTest(snapshot)", self.source)
+        self.assertIn("for (const rule in world.gameRules)", self.source)
+        self.assertIn("world.gameRules[rule] = wanted", self.source)
+        self.assertIn("}, 2);", self.source)
+        self.assertIn("GameTest changed gamerules; restored:", self.source)
+
+        start = self.source.index("function startSimulatedPlayerGameTest()")
+        end = self.source.index("\ntry {\n    if (typeof GameTest.register", start)
+        block = self.source[start:end]
+        snapshot = block.index("const gameRulesBeforeGameTest = snapshotGameRules();")
+        run = block.index("gametest run endstone_bot:sim_spawner")
+        restore = block.index("restoreGameRulesAfterGameTest(gameRulesBeforeGameTest);")
+        self.assertLess(snapshot, run)
+        self.assertLess(run, restore)
+
+    def test_gametest_rule_restore_uses_snapshot_not_hardcoded_defaults(self):
+        start = self.source.index("function restoreGameRulesAfterGameTest(snapshot)")
+        end = self.source.index("\nconst simulatedPlayers", start)
+        block = self.source[start:end]
+        self.assertNotIn("doDayLightCycle", block)
+        self.assertNotIn("doMobSpawning", block)
+        self.assertNotIn("randomTickSpeed", block)
+        self.assertIn("Object.entries(snapshot)", block)
 
     def test_gametest_structure_is_created_at_runtime(self):
         self.assertIn('world.structureManager.createEmpty(', self.source)
