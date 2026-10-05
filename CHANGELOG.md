@@ -5,6 +5,27 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.4.0] - 2026-10-05
+
+### 新增
+
+- 新增假人 36 格主背包整理：GUI「整理假人背包 / 完成背包整理」与 `/bot inventory <name>`
+- 开始整理前持久化玩家原背包完整 ItemStack/NBT 快照；完成第一次物理交换后，再持久化假人原背包快照
+- 玩家整理期间，玩家持有假人的真实背包，假人托管玩家原背包；完成时再次逐槽交换，玩家原背包原样返回，玩家当前选择的热栏槽成为假人主手槽
+- 新增 `inventory_sessions.json` 所有权日志和 `inventory_backups/` 最近 20 次完成/恢复快照归档
+- 已确认的 editing 会话在插件/服务器重启后可自动恢复：先把玩家当前持有的假人背包转回新假人，再从持久化 NBT 备份恢复玩家原背包
+
+### 安全
+
+- 背包转移使用 Script API `Container.swapItems()` 逐槽物理交换，正常路径不复制 ItemStack
+- 同一玩家一次只能整理一个假人，同一假人一次只能有一个托管会话
+- 托管期间假人切换为 spectator，并禁止移动、三叉戟和删除；`removeall` 在存在托管事务时拒绝执行
+- 每个逐槽交换都带反向回滚；若交换与回滚同时失败，保持 spectator + poisoned lease 并 fail-close
+- 重启后只有已经持久化确认进入 `editing` 的会话允许自动恢复；`preparing` / `finishing` 等所有所有权不确定状态一律进入 `manual_review`，不会猜测性恢复物品
+- 恢复玩家备份前必须确认玩家 36 格主背包为空；部分恢复失败会先清除本次重建结果并保留磁盘备份，避免重试叠加第二份物品
+- Behavior Pack protocol 提升到 3，Pack 版本提升到 4.3.0
+
+
 ## [4.3.9] - 2026-10-05
 
 ### 修复
