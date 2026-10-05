@@ -777,10 +777,24 @@ function doInventoryBegin(req) {
         gameMode = lockInventoryBot(sim);
         swapMainInventories(playerInventory, botInventory);
     } catch (e) {
-        try { unlockInventoryBot(sim, gameMode); } catch (_) {}
+        const poisoned = String(e).includes("rollback failed");
+        if (poisoned) {
+            inventoryLeases.set(name, {
+                session,
+                playerName,
+                playerSelected,
+                botSelected,
+                gameMode,
+                recovery: false,
+                poisoned: true,
+            });
+        } else {
+            try { unlockInventoryBot(sim, gameMode); } catch (_) {}
+        }
         reply("bot:inventory_error", {
             n: name, r: playerName, s: session,
-            reason: "begin_failed", e: String(e),
+            reason: poisoned ? "begin_rollback_failed" : "begin_failed",
+            e: String(e),
         });
         return;
     }
@@ -884,10 +898,24 @@ function doInventoryRecover(req) {
         gameMode = lockInventoryBot(sim);
         swapMainInventories(playerInventory, botInventory);
     } catch (e) {
-        try { unlockInventoryBot(sim, gameMode); } catch (_) {}
+        const poisoned = String(e).includes("rollback failed");
+        if (poisoned) {
+            inventoryLeases.set(name, {
+                session,
+                playerName,
+                playerSelected: 0,
+                botSelected: editedSelected,
+                gameMode,
+                recovery: true,
+                poisoned: true,
+            });
+        } else {
+            try { unlockInventoryBot(sim, gameMode); } catch (_) {}
+        }
         reply("bot:inventory_error", {
             n: name, r: playerName, s: session,
-            reason: "recovery_store_failed", e: String(e),
+            reason: poisoned ? "recovery_rollback_failed" : "recovery_store_failed",
+            e: String(e),
         });
         return;
     }
