@@ -131,14 +131,14 @@ function markManagedSimulatedPlayer(sim) {
     }
 }
 
-function findManagedSimulatedPlayer(name) {
+function findRuntimeSimulatedPlayer(name) {
     try {
         if (typeof world.getAllPlayers !== "function") return null;
         for (const player of world.getAllPlayers()) {
             let playerName = "";
             try { playerName = String(player.name || ""); } catch (_) {}
             if (playerName !== name) continue;
-            return isManagedSimulatedPlayer(player) ? player : null;
+            return isRuntimeSimulatedPlayer(player) ? player : null;
         }
     } catch (_) {}
     return null;
@@ -465,13 +465,17 @@ function doSpawn(req) {
         return;
     }
 
-    const managedExisting = findManagedSimulatedPlayer(name);
-    if (managedExisting) {
-        simulatedPlayers.set(name, managedExisting);
+    const existingWorldSim = findRuntimeSimulatedPlayer(name);
+    if (existingWorldSim) {
+        if (!markManagedSimulatedPlayer(existingWorldSim)) {
+            reply("bot:error", { n: name, e: "failed to mark existing SimulatedPlayer for reload adoption" });
+            return;
+        }
+        simulatedPlayers.set(name, existingWorldSim);
         deadPlayers.delete(name);
         tridentBusy.delete(name);
         try {
-            teleportSim(managedExisting, pose);
+            teleportSim(existingWorldSim, pose);
             reply("bot:spawned", { n: name, ok: true, existed: true, adopted: true });
         } catch (e) {
             reply("bot:error", { n: name, e: `adopted SimulatedPlayer teleport failed: ${String(e)}` });
