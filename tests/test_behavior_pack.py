@@ -1,15 +1,29 @@
+import json
+import re
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "endstone_bot" / "behavior_pack" / "scripts" / "main.js"
+MANIFEST = ROOT / "endstone_bot" / "behavior_pack" / "manifest.json"
+PLUGIN = ROOT / "endstone_bot" / "plugin.py"
 
 
 class BehaviorPackTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = SCRIPT.read_text(encoding="utf-8")
+        cls.manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        cls.plugin_source = PLUGIN.read_text(encoding="utf-8")
+
+    def test_behavior_pack_version_matches_plugin_deployer(self):
+        header_version = self.manifest["header"]["version"]
+        module_version = self.manifest["modules"][0]["version"]
+        self.assertEqual(header_version, module_version)
+        match = re.search(r"BEHAVIOR_PACK_VERSION = \[(\d+), (\d+), (\d+)\]", self.plugin_source)
+        self.assertIsNotNone(match)
+        self.assertEqual(header_version, [int(x) for x in match.groups()])
 
     def test_trident_is_taken_from_inventory(self):
         self.assertIn('getComponent("minecraft:inventory")', self.source)
