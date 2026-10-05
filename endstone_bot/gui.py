@@ -102,6 +102,9 @@ class BotGUI:
                     "§a整理假人背包\n临时接管 36 格主背包",
                     on_click=lambda p: self._toggle_inventory(p, fp, admin_context),
                 )
+                form.add_button("§b移动到我这里\n同步当前位置和视角", on_click=lambda p: self._move_here(p, fp, admin_context))
+                form.add_button("§6投掷三叉戟\n按已保存的位置和视角投掷", on_click=lambda p: self._throw_trident(p, fp, admin_context))
+                form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
             elif (
                 player_session is not None
                 and player_session.get("session_id") == session.get("session_id")
@@ -111,9 +114,6 @@ class BotGUI:
                     "§e完成背包整理\n归还假人并恢复我的背包",
                     on_click=lambda p: self._toggle_inventory(p, fp, admin_context),
                 )
-            form.add_button("§b移动到我这里\n同步当前位置和视角", on_click=lambda p: self._move_here(p, fp, admin_context))
-            form.add_button("§6投掷三叉戟\n按已保存的位置和视角投掷", on_click=lambda p: self._throw_trident(p, fp, admin_context))
-            form.add_button("§c删除假人", on_click=lambda p: self._confirm_remove(p, fp, admin_context))
         form.add_button(
             "返回",
             on_click=(lambda p: self.open_admin_bots(p)) if admin_context else (lambda p: self.open_my_bots(p)),
