@@ -113,6 +113,33 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("sim.headRotation.x", self.source)
         self.assertIn("sim.getViewDirection()", self.source)
 
+    def test_reload_shutdown_waits_for_real_simulated_player_drain(self):
+        self.assertIn("const DRAIN_MIN_TICKS = 5", self.source)
+        self.assertIn("const DRAIN_WARN_TICKS = 200", self.source)
+        self.assertIn("function beginDrain(releaseToken)", self.source)
+        self.assertIn("function pollDrain(elapsedTicks = 0)", self.source)
+        self.assertIn("world.getAllPlayers()", self.source)
+        self.assertIn("simStillAttached(name, sim)", self.source)
+        self.assertIn('reply("bot:shutdown_ack"', self.source)
+        self.assertIn('if (releaseToken) bridgeToken = "";', self.source)
+
+        start = self.source.index('case "bot:shutdown":')
+        end = self.source.index("break;", start)
+        block = self.source[start:end]
+        self.assertIn("beginShutdown();", block)
+        self.assertNotIn("clearAll();", block)
+        self.assertNotIn("bridgeToken = \"\"", block)
+
+    def test_spawn_refuses_occupied_or_auto_renamed_names(self):
+        start = self.source.index("function doSpawn(req)")
+        end = self.source.index("\nfunction finishRemove(", start)
+        block = self.source[start:end]
+        self.assertIn("worldHasExactPlayerName(name) === true", block)
+        self.assertIn("requested player name is still occupied", block)
+        self.assertIn("actualName !== name", block)
+        self.assertIn("refusing duplicate", block)
+        self.assertIn("sim.disconnect()", block)
+
     def test_throw_does_not_change_position_or_view(self):
         start = self.source.index("function doThrowTrident(req)")
         end = self.source.index("\nfunction clearAll()", start)
