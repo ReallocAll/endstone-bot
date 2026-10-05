@@ -150,7 +150,10 @@ class BotPlugin(Plugin):
         if not self.bridge.active:
             return
         for session in self.inventory_sessions.all():
-            if str(session.get("state", "")) == "recovery_pending":
+            state = str(session.get("state", ""))
+            if state == "prepared":
+                self._send_inventory_ready(session)
+            elif state == "recovery_pending":
                 self._try_inventory_recovery(session)
 
     @event_handler
@@ -196,6 +199,9 @@ class BotPlugin(Plugin):
             return
         if msg_id == "bot:inventory_swapped":
             self._handle_inventory_swapped(data)
+            return
+        if msg_id == "bot:inventory_ready_ack":
+            self._handle_inventory_ready(data)
             return
         if msg_id == "bot:inventory_committed":
             self._handle_inventory_committed(data)
@@ -318,6 +324,7 @@ class BotPlugin(Plugin):
                 "n": fp.name,
                 "r": str(getattr(player, "name", "") or ""),
                 "s": session_id,
+                "pg": str(session.get("player_game_mode", "survival") or "survival"),
             },
         )
         if not ok:
@@ -340,6 +347,7 @@ class BotPlugin(Plugin):
                 player,
                 bot_held_slot=int(data.get("bot_slot", 0)),
                 bot_game_mode=str(data.get("game_mode", "survival")),
+                player_game_mode=str(data.get("player_game_mode", "survival")),
             )
         except Exception as exc:
             # The physical swap succeeded but the second durable snapshot failed.
@@ -352,16 +360,48 @@ class BotPlugin(Plugin):
                     "n": str(session.get("bot_name", "")),
                     "r": str(session.get("player_name", "")),
                     "s": session_id,
+                    "rb": True,
                 },
             )
             if not ok:
                 self.inventory_sessions.set_state(session_id, "manual_review")
             return
 
-        player.send_message(
-            "§a已进入假人背包整理模式。你的原 36 格主背包现在由假人托管；"
-            "当前背包就是假人的真实背包。整理完成后再次点击「完成背包整理」或执行同一条 /bot inventory 命令。"
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None or not self._send_inventory_ready(session):
+            self.logger.warning("假人背包双份备份已持久化，但 ready 握手发送失败；将自动重试。")
+
+    def _send_inventory_ready(self, session: dict[str, Any]) -> bool:
+        if not self.bridge.active or str(session.get("state", "")) != "prepared":
+            return False
+        return self.bridge.send_bridge(
+            "inventory_ready",
+            {
+                "n": str(session.get("bot_name", "")),
+                "r": str(session.get("player_name", "")),
+                "s": str(session.get("session_id", "")),
+            },
         )
+
+    def _handle_inventory_ready(self, data: dict[str, Any]) -> None:
+        session_id = str(data.get("s", "") or "")
+        session = self.inventory_sessions.by_session(session_id)
+        if session is None:
+            self.logger.error("收到未知背包事务的 inventory_ready_ack；保持 fail-close。")
+            return
+        if str(session.get("state", "")) == "editing":
+            return
+        if str(session.get("state", "")) != "prepared":
+            self.inventory_sessions.set_state(session_id, "manual_review")
+            return
+        self.inventory_sessions.set_state(session_id, "editing")
+        player = self._find_inventory_player(session)
+        if player is not None:
+            player.send_message(
+                "§a玩家原背包与假人原背包均已持久化备份。现在进入假人背包整理模式；"
+                "当前 36 格主背包就是假人的真实背包。整理完成后再次点击「完成背包整理」"
+                "或执行同一条 /bot inventory 命令。"
+            )
 
     def _handle_inventory_committed(self, data: dict[str, Any]) -> None:
         session_id = str(data.get("s", "") or "")
@@ -464,6 +504,9 @@ class BotPlugin(Plugin):
             # remains, so the durable journal can be discarded.
             self.inventory_sessions.abort_before_swap(session_id)
             self._message_inventory_player(session, f"§c无法开始整理假人背包：{reason}")
+            return
+        if state == "prepared" and reason in ("ready_player_not_found",):
+            # Player may reconnect; both backups and ownership are durable.
             return
         if state == "finishing" and reason == "finish_failed":
             self.inventory_sessions.set_state(session_id, "editing")
