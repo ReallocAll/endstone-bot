@@ -56,7 +56,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 3, 1]
+    BEHAVIOR_PACK_VERSION = [4, 3, 2]
 
     def on_load(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -190,7 +190,9 @@ class BotPlugin(Plugin):
             name = str(data.get("n", ""))
             ok = bool(data.get("ok", False))
             self.manager.mark_spawned(name, ok)
-            if ok and not data.get("existed") and not data.get("respawned"):
+            if ok and data.get("adopted"):
+                self.logger.info(f"已重新接管假人 {name}。")
+            elif ok and not data.get("existed") and not data.get("respawned"):
                 self.logger.info(f"假人 {name} 已生成。")
             return
         if msg_id == "bot:trident_result":
