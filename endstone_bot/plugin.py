@@ -34,6 +34,7 @@ class BotPlugin(Plugin):
                 "/bot",
                 "/bot (gui|list|status|admin|removeall)<action: BotSimpleAction>",
                 "/bot (spawn|remove|tp|trident)<action: BotNamedAction> <name: str>",
+                "/bot (online|offline)<action: BotOnlineAction> <name: str>",
                 "/bot (inventory)<action: BotInventoryAction> <name: str> (start|done)<mode: BotInventoryMode>",
                 "/bot (createat)<action: BotCreateAtAction> <name: str> <owner: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotDimension>",
                 "/bot (moveat)<action: BotMoveAtAction> <name: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotMoveDimension>",
@@ -198,6 +199,8 @@ class BotPlugin(Plugin):
                     fp.sim_spawn_confirmed = False
                 fp.sim_has_position = False
                 fp.sim_last_seen_at = 0.0
+                if not fp.desired_online and self.bridge.active and not self.manager.inventory_locked(fp):
+                    self.bridge.send_bridge("remove", {"n": fp.name})
             return
         if msg_id == "bot:positions":
             entries = data.get("p", [])
@@ -328,6 +331,16 @@ class BotPlugin(Plugin):
             ok, message = self.manager.throw_trident_here(sender, fp)
             self._send_result(sender, ok, message)
             return True
+        if action in ("online", "offline"):
+            if len(args) < 2:
+                return True
+            fp = self.manager.get_by_name(str(args[1]))
+            if fp is None:
+                self._send_error(sender, "假人不存在。")
+                return True
+            ok, message = self.manager.set_online(sender, fp, action == "online")
+            self._send_result(sender, ok, message)
+            return True
         if action == "inventory":
             if len(args) < 3:
                 return True
@@ -361,7 +374,7 @@ class BotPlugin(Plugin):
             self.gui.open_main(sender)
         else:
             sender.send_message(
-                "控制台管理：/bot status | list | createat | moveat | remove | removeall | limit | config"
+                "控制台管理：/bot status | list | online | offline | createat | moveat | remove | removeall | limit | config"
             )
         return True
 
