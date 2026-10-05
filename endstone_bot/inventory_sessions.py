@@ -261,6 +261,13 @@ class InventorySessionStore:
                 return dict(rec)
         return None
 
+    def by_session(self, session_id: str) -> dict[str, Any] | None:
+        wanted = str(session_id or "")
+        for rec in self._sessions.values():
+            if str(rec.get("session_id", "")) == wanted:
+                return dict(rec)
+        return None
+
     def for_player(self, player: Any) -> dict[str, Any] | None:
         key = self._player_key(player)
         for rec in self._sessions.values():
