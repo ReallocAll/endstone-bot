@@ -46,66 +46,64 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("previousSelected", self.source)
         self.assertIn("restoreHotbarAfterTrident", self.source)
 
-    def test_fake_players_are_test_bound_like_working_addons(self):
-        self.assertIn("activeTest.spawnSimulatedPlayer", self.source)
-        self.assertNotIn("GameTest.spawnSimulatedPlayer", self.source)
-        self.assertIn("gametest run endstone_bot:sim_spawner", self.source)
+    def test_fake_players_use_standalone_api_only(self):
+        self.assertIn("GameTest.spawnSimulatedPlayer(", self.source)
+        self.assertIn("survivalGameMode", self.source)
+        self.assertIn("dimension: getDimension(req.d)", self.source)
+        self.assertIn("standaloneSimulatedPlayerSupported", self.source)
 
-    def test_spawn_helper_does_not_hide_initial_teleport_failure(self):
-        start = self.source.index("function spawnWithTestApi(req)")
+        for forbidden in (
+            "GameTest.register",
+            "activeTest",
+            "startSimulatedPlayerGameTest",
+            "ensureGameTestStructure",
+            "structureManager.createEmpty",
+            "StructureSaveMode",
+            "gametest run endstone_bot:sim_spawner",
+            "snapshotGameRules",
+            "restoreGameRulesAfterGameTest",
+        ):
+            self.assertNotIn(forbidden, self.source)
+        self.assertNotIn("world.gameRules", self.source)
+        self.assertEqual(self.source.count(".runCommand("), 1)
+        self.assertIn("`botbridge ${eventName} ${encoded}`", self.source)
+
+    def test_standalone_spawn_helper_uses_dimension_location(self):
+        start = self.source.index("function spawnStandaloneSimulatedPlayer(req)")
         end = self.source.index("\nfunction isDeadSim(", start)
         block = self.source[start:end]
+        self.assertIn("GameTest.spawnSimulatedPlayer(", block)
+        self.assertIn("dimension: getDimension(req.d)", block)
+        self.assertIn("x: Number(req.x)", block)
+        self.assertIn("y: Number(req.y)", block)
+        self.assertIn("z: Number(req.z)", block)
+        self.assertIn("survivalGameMode", block)
         self.assertNotIn("teleportSim(", block)
 
-    def test_new_spawn_disconnects_if_initial_teleport_fails(self):
+    def test_new_spawn_fail_closes_without_legacy_fallback(self):
         start = self.source.index("function doSpawn(req)")
         end = self.source.index("\nfunction finishRemove(", start)
         block = self.source[start:end]
-        self.assertIn("initial SimulatedPlayer teleport failed", block)
+        self.assertIn("spawnStandaloneSimulatedPlayer(pose)", block)
+        self.assertIn("standalone SimulatedPlayer spawn failed", block)
         self.assertIn("try { sim.disconnect(); } catch (_) {}", block)
         self.assertIn("desiredPoses.delete(name)", block)
         self.assertIn("existing SimulatedPlayer teleport failed", block)
+        self.assertNotIn("startSimulatedPlayerGameTest", block)
 
-    def test_gametest_restores_changed_gamerules(self):
-        self.assertIn("function snapshotGameRules()", self.source)
-        self.assertIn("function restoreGameRulesAfterGameTest(snapshot)", self.source)
-        self.assertIn("for (const rule in world.gameRules)", self.source)
-        self.assertIn("world.gameRules[rule] = wanted", self.source)
-        self.assertIn("}, 2);", self.source)
-        self.assertIn("GameTest changed gamerules; restored:", self.source)
+    def test_hello_ack_advertises_standalone_capability(self):
+        self.assertIn("standalone: standaloneSimulatedPlayerSupported", self.source)
+        self.assertIn("legacy test-bound fallback is intentionally disabled", self.source)
 
-        start = self.source.index("function startSimulatedPlayerGameTest()")
-        end = self.source.index("\ntry {\n    if (typeof GameTest.register", start)
-        block = self.source[start:end]
-        snapshot = block.index("const gameRulesBeforeGameTest = snapshotGameRules();")
-        run = block.index("gametest run endstone_bot:sim_spawner")
-        restore = block.index("restoreGameRulesAfterGameTest(gameRulesBeforeGameTest);")
-        self.assertLess(snapshot, run)
-        self.assertLess(run, restore)
-
-    def test_gametest_rule_restore_uses_snapshot_not_hardcoded_defaults(self):
-        start = self.source.index("function restoreGameRulesAfterGameTest(snapshot)")
-        end = self.source.index("\nconst simulatedPlayers", start)
-        block = self.source[start:end]
-        self.assertNotIn("doDayLightCycle", block)
-        self.assertNotIn("doMobSpawning", block)
-        self.assertNotIn("randomTickSpeed", block)
-        self.assertIn("Object.entries(snapshot)", block)
-
-    def test_gametest_structure_is_created_at_runtime(self):
-        self.assertIn('world.structureManager.createEmpty(', self.source)
-        self.assertIn('StructureSaveMode.World', self.source)
-        self.assertIn('structure.saveToWorld()', self.source)
-        self.assertIn('world.structureManager.get(structureId)', self.source)
-        self.assertIn('startSimulatedPlayerGameTest()', self.source)
-
-    def test_move_uses_gametest_relative_controller_view_until_move(self):
+    def test_move_uses_world_coordinates_until_move(self):
         self.assertIn("sim.lookAtLocation(", self.source)
         self.assertIn('GameTest.LookDuration?.UntilMove ?? "UntilMove"', self.source)
-        self.assertIn("const relativeTarget = activeTest.relativeLocation(target)", self.source)
         self.assertIn("head.x + dx * invLength * 32", self.source)
         self.assertIn("head.y + dy * invLength * 32", self.source)
         self.assertIn("head.z + dz * invLength * 32", self.source)
+        self.assertIn("sim.lookAtLocation(\n                target,", self.source)
+        self.assertNotIn("relativeLocation", self.source)
+        self.assertNotIn("activeTest", self.source)
         self.assertNotIn("function savedPitch(req)", self.source)
         self.assertNotIn("function convergeSavedPitch(sim, req", self.source)
         self.assertNotIn("const compensatedPitch =", self.source)

@@ -56,7 +56,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 2, 9]
+    BEHAVIOR_PACK_VERSION = [4, 3, 0]
 
     def on_load(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -132,6 +132,14 @@ class BotPlugin(Plugin):
         self.bridge.mark_stale_if_needed()
         if self.bridge.active:
             self._bridge_warning_sent = False
+            return
+        if self.bridge.standalone_supported is False:
+            if not self._bridge_warning_sent:
+                self.logger.warning(
+                    "当前加载的 Bot 行为包不支持 standalone SimulatedPlayer；"
+                    "请确认新版行为包已写入世界后完整重启服务器。"
+                )
+                self._bridge_warning_sent = True
             return
 
         # While disconnected, retry the authenticated handshake. Once connected,

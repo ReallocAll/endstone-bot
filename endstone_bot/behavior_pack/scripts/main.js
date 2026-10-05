@@ -11,63 +11,17 @@
  */
 
 import * as GameTest from "@minecraft/server-gametest";
-import { StructureSaveMode, system, world } from "@minecraft/server";
+import { GameMode, system, world } from "@minecraft/server";
 
 const PROTOCOL = 2;
 const MAX_MESSAGE_CHARS = 1400;
+const standaloneSimulatedPlayerSupported =
+    typeof GameTest.spawnSimulatedPlayer === "function";
+const survivalGameMode =
+    GameMode.Survival ?? GameMode.survival ?? "Survival";
 let bridgeToken = "";
-let activeTest = null;
-let gameTestStartRequested = false;
-
-function snapshotGameRules() {
-    const snapshot = {};
-    try {
-        for (const rule in world.gameRules) {
-            const value = world.gameRules[rule];
-            if (
-                typeof value === "boolean" ||
-                typeof value === "number" ||
-                typeof value === "string"
-            ) {
-                snapshot[rule] = value;
-            }
-        }
-    } catch (e) {
-        console.warn(`[EndstoneBot] failed to snapshot gamerules before GameTest: ${e}`);
-    }
-    return snapshot;
-}
-
-function restoreGameRulesAfterGameTest(snapshot) {
-    if (!snapshot || typeof snapshot !== "object") return;
-    system.runTimeout(() => {
-        const restored = [];
-        for (const [rule, wanted] of Object.entries(snapshot)) {
-            try {
-                if (world.gameRules[rule] !== wanted) {
-                    world.gameRules[rule] = wanted;
-                    if (world.gameRules[rule] === wanted) {
-                        restored.push(`${rule}=${String(wanted)}`);
-                    } else {
-                        console.warn(
-                            `[EndstoneBot] failed to restore gamerule ${rule}: expected=${String(wanted)} actual=${String(world.gameRules[rule])}`
-                        );
-                    }
-                }
-            } catch (e) {
-                console.warn(`[EndstoneBot] failed to restore gamerule ${rule}: ${e}`);
-            }
-        }
-        if (restored.length > 0) {
-            console.warn(
-                `[EndstoneBot] GameTest changed gamerules; restored: ${restored.join(", ")}`
-            );
-        }
-    }, 2);
-}
 
 const simulatedPlayers = new Map();
-const pendingSpawns = [];
 const tridentBusy = new Set();
 const deadPlayers = new Set();
 const desiredPoses = new Map();
@@ -202,17 +156,9 @@ function orientSim(sim, req) {
         };
 
         try {
-            if (!activeTest || typeof activeTest.relativeLocation !== "function") {
-                throw new Error("GameTest relativeLocation is unavailable");
-            }
-
-            // Test-bound SimulatedPlayer controller methods consume GameTest
-            // relative coordinates. The bot itself may be teleported anywhere
-            // in the world, so convert the desired absolute world target back
-            // into the owning Test coordinate system before lookAtLocation().
-            const relativeTarget = activeTest.relativeLocation(target);
+            // Standalone controller locations are ordinary world coordinates.
             sim.lookAtLocation(
-                relativeTarget,
+                target,
                 GameTest.LookDuration?.UntilMove ?? "UntilMove",
             );
             return;
@@ -240,9 +186,20 @@ function teleportSim(sim, req) {
 }
 
 
-function spawnWithTestApi(req) {
-    if (!activeTest) return null;
-    return activeTest.spawnSimulatedPlayer({ x: 0, y: 2, z: 0 }, String(req.n));
+function spawnStandaloneSimulatedPlayer(req) {
+    if (!standaloneSimulatedPlayerSupported) {
+        throw new Error("standalone GameTest.spawnSimulatedPlayer is unavailable");
+    }
+    return GameTest.spawnSimulatedPlayer(
+        {
+            dimension: getDimension(req.d),
+            x: Number(req.x),
+            y: Number(req.y),
+            z: Number(req.z),
+        },
+        String(req.n),
+        survivalGameMode,
+    );
 }
 
 function isDeadSim(name, sim) {
@@ -326,36 +283,30 @@ function doSpawn(req) {
         tridentBusy.delete(name);
     }
 
-    if (!activeTest) {
-        if (!pendingSpawns.some((x) => String(x.n) === name)) pendingSpawns.push(req);
-        startSimulatedPlayerGameTest();
-        return;
-    }
-
     let sim = null;
     try {
-        sim = spawnWithTestApi(req);
+        sim = spawnStandaloneSimulatedPlayer(pose);
     } catch (e) {
-        reply("bot:error", { n: name, e: `GameTest spawn failed: ${String(e)}` });
+        reply("bot:error", { n: name, e: `standalone SimulatedPlayer spawn failed: ${String(e)}` });
         return;
     }
 
     if (!sim) {
-        reply("bot:error", { n: name, e: "Test.spawnSimulatedPlayer returned null" });
+        reply("bot:error", { n: name, e: "GameTest.spawnSimulatedPlayer returned null" });
         return;
     }
 
     try {
-        // Initial placement is deliberately performed exactly once here. If it
-        // fails after spawn, disconnect the untracked object before reporting the
-        // error so a failed request cannot leak an orphan SimulatedPlayer.
-        teleportSim(sim, pose);
+        // The standalone API spawns directly at the requested DimensionLocation.
+        // Only synchronize the saved view here; no GameTest-relative coordinates
+        // and no second placement teleport are required.
+        orientSim(sim, pose);
     } catch (e) {
         try { sim.disconnect(); } catch (_) {}
         deadPlayers.delete(name);
         tridentBusy.delete(name);
         desiredPoses.delete(name);
-        reply("bot:error", { n: name, e: `initial SimulatedPlayer teleport failed: ${String(e)}` });
+        reply("bot:error", { n: name, e: `initial SimulatedPlayer orientation failed: ${String(e)}` });
         return;
     }
 
@@ -685,7 +636,6 @@ function clearAll() {
         deadPlayers.delete(name);
         desiredPoses.delete(name);
     }
-    pendingSpawns.length = 0;
     reply("bot:cleared", { count: entries.length });
 }
 
@@ -727,80 +677,11 @@ function flushPositions(report) {
     if (batch.length > 0) reply("bot:positions", { p: batch });
 }
 
-function ensureGameTestStructure() {
-    const structureId = "endstone_bot:empty";
-
-    try {
-        const existing = world.structureManager.get(structureId);
-        if (existing) return true;
-    } catch (_) {}
-
-    try {
-        // Current Script API can persist at creation time.
-        try {
-            world.structureManager.createEmpty(
-                structureId,
-                { x: 1, y: 1, z: 1 },
-                StructureSaveMode.World,
-            );
-        } catch (currentApiError) {
-            // Keep the same compatibility path used by established fake-player
-            // packs on older beta APIs.
-            const structure = world.structureManager.createEmpty(
-                structureId,
-                { x: 1, y: 1, z: 1 },
-            );
-            if (typeof structure.saveToWorld !== "function") {
-                throw currentApiError;
-            }
-            structure.saveToWorld();
-        }
-
-        return Boolean(world.structureManager.get(structureId));
-    } catch (e) {
-        console.warn(`[EndstoneBot] failed to create GameTest structure: ${e}`);
-        return false;
-    }
-}
-
-function startSimulatedPlayerGameTest() {
-    if (gameTestStartRequested || activeTest) return;
-    gameTestStartRequested = true;
-
-    system.run(() => {
-        if (!ensureGameTestStructure()) {
-            gameTestStartRequested = false;
-            return;
-        }
-
-        const gameRulesBeforeGameTest = snapshotGameRules();
-        try {
-            world.getDimension("overworld").runCommand(
-                "execute positioned 15000000 256 15000000 run gametest run endstone_bot:sim_spawner"
-            );
-        } catch (e) {
-            gameTestStartRequested = false;
-            console.warn(`[EndstoneBot] failed to start SimulatedPlayer GameTest: ${e}`);
-        } finally {
-            restoreGameRulesAfterGameTest(gameRulesBeforeGameTest);
-        }
-    });
-}
-
-try {
-    if (typeof GameTest.register === "function") {
-        let registration = GameTest.register("endstone_bot", "sim_spawner", (test) => {
-            activeTest = test;
-            gameTestStartRequested = false;
-            while (pendingSpawns.length > 0) doSpawn(pendingSpawns.shift());
-        }).structureName("endstone_bot:empty").maxTicks(0x7fffffff);
-        if (GameTest.Tags && GameTest.Tags.suiteDefault) {
-            registration = registration.tag(GameTest.Tags.suiteDefault);
-        }
-        startSimulatedPlayerGameTest();
-    }
-} catch (e) {
-    console.warn(`[EndstoneBot] GameTest registration failed: ${e}`);
+if (!standaloneSimulatedPlayerSupported) {
+    console.warn(
+        "[EndstoneBot] standalone GameTest.spawnSimulatedPlayer is unavailable; " +
+        "legacy test-bound fallback is intentionally disabled"
+    );
 }
 
 system.afterEvents.scriptEventReceive.subscribe((event) => {
@@ -823,7 +704,10 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
             return;
         }
         bridgeToken = data.t;
-        reply("bot:hello_ack", { ok: true });
+        reply("bot:hello_ack", {
+            ok: true,
+            standalone: standaloneSimulatedPlayerSupported,
+        });
         return;
     }
 

@@ -20,6 +20,8 @@ class BridgeManager:
         self._last_seen_at = -999.0
         self._ready = False
         self._remote_protocol: int | None = None
+        self._standalone_supported: bool | None = None
+        self._unsupported_logged = False
 
     @property
     def active(self) -> bool:
@@ -33,10 +35,16 @@ class BridgeManager:
     def remote_protocol(self) -> int | None:
         return self._remote_protocol
 
+    @property
+    def standalone_supported(self) -> bool | None:
+        return self._standalone_supported
+
     def reset(self) -> None:
         self._ready = False
         self._last_seen_at = -999.0
         self._remote_protocol = None
+        self._standalone_supported = None
+        self._unsupported_logged = False
         self._token = secrets.token_hex(16)
 
     def _send_raw(self, event_id: str, data: dict[str, Any]) -> bool:
@@ -103,11 +111,24 @@ class BridgeManager:
                     f"行为包协议不兼容: plugin={BRIDGE_PROTOCOL}, pack={remote_protocol}"
                 )
                 return None
+
+            self._standalone_supported = data.get("standalone") is True
+            if not self._standalone_supported:
+                self._ready = False
+                self._last_seen_at = time.monotonic()
+                if not self._unsupported_logged:
+                    self._logger.error(
+                        "当前加载的行为包不支持 standalone SimulatedPlayer；"
+                        "已拒绝启用旧 GameTest 回退。请确认 Behavior Pack 4.3.0 已部署并完整重启服务器。"
+                    )
+                    self._unsupported_logged = True
+                return None
+
             first_ready = not self._ready
             self._ready = True
             self._last_seen_at = time.monotonic()
             if first_ready:
-                self._logger.info("行为包桥接已认证，SimulatedPlayer 功能可用。")
+                self._logger.info("行为包桥接已认证，standalone SimulatedPlayer 功能可用。")
             return {"id": msg_id, "data": data}
 
         if remote_protocol != BRIDGE_PROTOCOL or not self._ready:

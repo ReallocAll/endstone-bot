@@ -41,6 +41,7 @@ class BridgeTests(unittest.TestCase):
         bridge = BridgeManager(Logger(), lambda _: True)
         payload = {
             "ok": True,
+            "standalone": True,
             "t": bridge._token,
             "p": BRIDGE_PROTOCOL,
         }
@@ -51,6 +52,36 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["id"], "bot:hello_ack")
         self.assertTrue(bridge.active)
+
+    def test_hello_ack_rejects_missing_standalone_capability(self):
+        logger = Logger()
+        bridge = BridgeManager(logger, lambda _: True)
+        payload = {
+            "ok": True,
+            "t": bridge._token,
+            "p": BRIDGE_PROTOCOL,
+        }
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8").hex()
+
+        self.assertIsNone(bridge.handle_command_callback("hello_ack", encoded))
+        self.assertFalse(bridge.active)
+        self.assertFalse(bridge.standalone_supported)
+
+    def test_hello_ack_accepts_standalone_capability(self):
+        bridge = BridgeManager(Logger(), lambda _: True)
+        payload = {
+            "ok": True,
+            "standalone": True,
+            "t": bridge._token,
+            "p": BRIDGE_PROTOCOL,
+        }
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8").hex()
+
+        parsed = bridge.handle_command_callback("hello_ack", encoded)
+
+        self.assertIsNotNone(parsed)
+        self.assertTrue(bridge.active)
+        self.assertTrue(bridge.standalone_supported)
 
     def test_hex_callback_rejects_wrong_token(self):
         bridge = BridgeManager(Logger(), lambda _: True)
@@ -68,6 +99,7 @@ class BridgeTests(unittest.TestCase):
         bridge = BridgeManager(Logger(), lambda _: True)
         ack = {
             "ok": True,
+            "standalone": True,
             "t": bridge._token,
             "p": BRIDGE_PROTOCOL,
         }
