@@ -228,6 +228,25 @@ class InventorySessionTests(unittest.TestCase):
             reloaded = module.InventorySessionStore(root, Logger())
             self.assertEqual(reloaded.for_bot_id(bot.id)["state"], "recovery_pending")
 
+    def test_failed_journal_write_does_not_advance_live_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = module.InventorySessionStore(Path(td), Logger())
+            player = FakePlayer()
+            bot = FakeBot()
+            rec = store.create(player, bot)
+
+            original_writer = store._atomic_write_json
+            def fail_write(*_args, **_kwargs):
+                raise OSError("disk full")
+            store._atomic_write_json = fail_write
+            try:
+                with self.assertRaises(OSError):
+                    store.set_state(rec["session_id"], "finishing")
+            finally:
+                store._atomic_write_json = original_writer
+
+            self.assertEqual(store.for_bot_id(bot.id)["state"], "preparing")
+
     def test_one_player_cannot_own_two_inventory_sessions(self):
         with tempfile.TemporaryDirectory() as td:
             store = module.InventorySessionStore(Path(td), Logger())
