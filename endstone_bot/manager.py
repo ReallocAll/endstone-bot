@@ -334,6 +334,34 @@ class FakeBotManager:
                 self._logger.error(f"完整回滚背包事务失败 [{fp.name}]，事务保持锁定: {exc}")
             return
 
+        if state == "PLAYER_CLEARED":
+            try:
+                if not bot_player.inventory.is_empty:
+                    raise RuntimeError("recovery target bot inventory is not empty")
+                edited_bot = session.get("edited_bot")
+                if not isinstance(edited_bot, dict):
+                    raise RuntimeError("missing edited bot snapshot")
+                restore_inventory(bot_player.inventory, edited_bot)
+                if inventory_digest(bot_player.inventory) != str(session.get("edited_bot_digest")):
+                    raise RuntimeError("recovered bot inventory verification failed")
+                self._put_inventory_session(fp, session, "BOT_RESTORED")
+
+                player = self._online_player_named(str(session.get("player_name", "")))
+                if player is not None and self._session_matches_player(session, player):
+                    if not player.inventory.is_empty:
+                        raise RuntimeError("player inventory is not empty during recovery")
+                    restore_inventory(player.inventory, session["player_backup"])
+                    if inventory_digest(player.inventory) != str(session.get("player_digest")):
+                        raise RuntimeError("recovered player inventory verification failed")
+                    self.inventory_journal.remove(fp.id)
+                    self._notify_session_player(
+                        session,
+                        f"{fp.name} 的整理结果和你的原背包均已从事务日志恢复。",
+                    )
+            except Exception as exc:
+                self._logger.error(f"恢复中断的背包归还失败 [{fp.name}]，事务保持锁定: {exc}")
+            return
+
         if state != "WAIT_SPAWN_FOR_RETURN":
             return
 
@@ -454,8 +482,14 @@ class FakeBotManager:
             return
 
         if state in {"WAIT_SPAWN_FOR_RETURN", "RETURNING_PREPARED", "PLAYER_CLEARED"}:
-            if state == "RETURNING_PREPARED" and current_digest == str(session.get("edited_bot_digest")):
-                self._put_inventory_session(fp, session, "WAIT_SPAWN_FOR_RETURN")
+            if state == "RETURNING_PREPARED":
+                if current_digest == str(session.get("edited_bot_digest")):
+                    self._put_inventory_session(fp, session, "WAIT_SPAWN_FOR_RETURN")
+                elif player.inventory.is_empty:
+                    self._put_inventory_session(fp, session, "PLAYER_CLEARED")
+                else:
+                    player.send_message("§c归还事务的玩家背包状态无法判定，已 fail-close。")
+                    return
             elif state == "PLAYER_CLEARED" and not player.inventory.is_empty:
                 player.send_message("§c事务记录要求玩家背包为空，但检测到物品，已 fail-close。")
                 return
