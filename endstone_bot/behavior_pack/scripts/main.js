@@ -25,6 +25,7 @@ const simulatedPlayers = new Map();
 const tridentBusy = new Set();
 const deadPlayers = new Set();
 const desiredPoses = new Map();
+const DRAIN_MIN_TICKS = 5;
 const DRAIN_WARN_TICKS = 200;
 let drainState = null;
 
@@ -120,6 +121,11 @@ function pollDrain(elapsedTicks = 0) {
     drainState.entries = remaining;
 
     if (remaining.length === 0) {
+        if (drainState.total > 0 && elapsedTicks < DRAIN_MIN_TICKS) {
+            system.runTimeout(() => pollDrain(elapsedTicks + 1), 1);
+            return;
+        }
+
         const { total, releaseToken } = drainState;
         if (releaseToken) {
             reply("bot:shutdown_ack", { count: total });
