@@ -117,10 +117,18 @@ class BotPlugin(Plugin):
             self.logger.warning(f"生成 Beta APIs 离线补丁脚本失败: {exc}")
 
     def on_disable(self) -> None:
+        inventories_saved = True
         if hasattr(self, "manager"):
+            inventories_saved = self.manager.persist_online_bot_inventories()
             self.manager.save()
         if hasattr(self, "bridge"):
-            self.bridge.shutdown()
+            if inventories_saved:
+                self.bridge.shutdown()
+            else:
+                self.logger.error(
+                    "存在假人背包未能持久化；本次禁用不主动 disconnect 假人，"
+                    "以便 /reload 后优先重新接管仍存活的对象。"
+                )
 
     def _tick(self) -> None:
         self._tick_counter += 1
