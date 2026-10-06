@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "endstone_bot" / "manager.py"
 PLUGIN = ROOT / "endstone_bot" / "plugin.py"
 JOURNAL = ROOT / "endstone_bot" / "inventory_journal.py"
+BOT_STORE = ROOT / "endstone_bot" / "bot_inventory_store.py"
 GUI = ROOT / "endstone_bot" / "gui.py"
 
 
@@ -15,6 +16,7 @@ class ManagerSourceTests(unittest.TestCase):
         cls.source = MANAGER.read_text(encoding="utf-8")
         cls.plugin_source = PLUGIN.read_text(encoding="utf-8")
         cls.journal_source = JOURNAL.read_text(encoding="utf-8")
+        cls.bot_store_source = BOT_STORE.read_text(encoding="utf-8")
         cls.gui_source = GUI.read_text(encoding="utf-8")
 
     def test_trident_throw_uses_saved_pose_only(self):
@@ -85,6 +87,65 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn("os.fsync", self.journal_source)
         self.assertIn("self._write_sessions(updated)", self.journal_source)
         self.assertIn("self.sessions = updated", self.journal_source)
+
+    def test_bot_inventory_persistence_preserves_full_equipment(self):
+        for slot in (
+            "helmet",
+            "chestplate",
+            "leggings",
+            "boots",
+            "item_in_off_hand",
+        ):
+            self.assertIn(f'"{slot}"', self.bot_store_source)
+        self.assertIn("snapshot_inventory(inventory)", self.bot_store_source)
+        self.assertIn("restore_inventory(inventory, snapshot", self.bot_store_source)
+        self.assertIn("item_to_record", self.bot_store_source)
+        self.assertIn("item_from_record", self.bot_store_source)
+        self.assertIn("os.fsync", self.bot_store_source)
+        self.assertIn("os.replace", self.bot_store_source)
+
+    def test_manual_offline_parks_inventory_before_disconnect(self):
+        start = self.source.index("    def set_online(")
+        end = self.source.index("\n    def remove(", start)
+        block = self.source[start:end]
+        parked = block.index("self._park_bot_inventory(fp)")
+        desired = block.index("fp.desired_online = desired")
+        remove = block.index('self._bridge.send_bridge("remove", {"n": fp.name})')
+        self.assertLess(parked, desired)
+        self.assertLess(desired, remove)
+        self.assertIn("为防止物品丢失已拒绝下线", block)
+
+    def test_shutdown_persists_inventory_before_bridge_disconnect(self):
+        start = self.plugin_source.index("    def on_disable(")
+        end = self.plugin_source.index("\n    def _tick(", start)
+        block = self.plugin_source[start:end]
+        persist = block.index("self.manager.prepare_shutdown_inventory()")
+        shutdown = block.index("self.bridge.shutdown()")
+        self.assertLess(persist, shutdown)
+        self.assertIn("if inventory_safe:", block)
+
+    def test_fresh_spawn_restores_only_parked_inventory(self):
+        self.assertIn('state == "LIVE"', self.source)
+        self.assertIn('state != "PARKED"', self.source)
+        self.assertIn("bot_inventory_is_empty(player.inventory)", self.source)
+        self.assertIn("restore_bot_inventory(player.inventory, snapshot)", self.source)
+        self.assertIn("bot_inventory_digest(player.inventory) != digest", self.source)
+        self.assertIn("为防止使用陈旧背包快照刷物", self.source)
+
+        start = self.source.index("    def mark_spawned(")
+        end = self.source.index("\n    def update_position(", start)
+        block = self.source[start:end]
+        self.assertIn("if existed or adopted or respawned:", block)
+        self.assertIn("self._checkpoint_live_bot_inventory(fp)", block)
+        self.assertIn("self._restore_parked_inventory(fp)", block)
+
+    def test_inventory_organizer_still_excludes_equipment(self):
+        start = self.source.index("    def begin_inventory_edit(")
+        end = self.source.index("\n    def on_bot_removed(", start)
+        block = self.source[start:end]
+        self.assertIn("snapshot_inventory(sender.inventory)", block)
+        self.assertIn("snapshot_inventory(bot_player.inventory)", block)
+        self.assertNotIn("snapshot_bot_inventory(", block)
 
     def test_manual_offline_is_persistent_and_blocks_autospawn(self):
         self.assertIn("not fp.desired_online", self.source)
