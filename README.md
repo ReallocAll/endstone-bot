@@ -165,6 +165,7 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 ## 数据
 
 - `bots.json`：持久化假人定义、挂机锚点、pitch/yaw 和世界空间视线方向。
+- `bot_inventories.json`：假人普通上下线/正常关服时使用的一次性主背包 escrow；恢复成功后立即消费删除。只保存主背包/快捷栏与当前手持槽，不保存盔甲和副手。
 - `config.json`：全局资源限制与位置守护设置。
 - `enable_beta.py`：插件自动生成的显式离线 Beta APIs 补丁脚本。
 - `level_dat_backups/<world>/`：手动执行补丁脚本时创建的校验备份。
