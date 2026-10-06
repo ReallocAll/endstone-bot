@@ -800,6 +800,11 @@ class FakeBotManager:
         for lower, fp in known.items():
             if lower in remote:
                 if not fp.desired_online and not self.inventory_locked(fp):
+                    if not self.persist_bot_inventory(fp):
+                        self._logger.error(
+                            f"拒绝下线 {fp.name}：背包持久化失败，保留当前活对象。"
+                        )
+                        continue
                     self._bridge.send_bridge("remove", {"n": remote[lower]})
                     fp.sim_spawn_confirmed = False
                     fp.sim_has_position = False
@@ -833,7 +838,12 @@ class FakeBotManager:
             return
         if not fp.desired_online and not self.inventory_locked(fp):
             if self._bridge.active:
-                self._bridge.send_bridge("remove", {"n": fp.name})
+                if self.persist_bot_inventory(fp):
+                    self._bridge.send_bridge("remove", {"n": fp.name})
+                else:
+                    self._logger.error(
+                        f"拒绝下线 {fp.name}：背包持久化失败，保留当前活对象。"
+                    )
             return
         try:
             nx, ny, nz = float(x), float(y), float(z)
