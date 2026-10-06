@@ -118,6 +118,7 @@ class BotPlugin(Plugin):
 
     def on_disable(self) -> None:
         if hasattr(self, "manager"):
+            self.manager.prepare_shutdown_inventory()
             self.manager.save()
         if hasattr(self, "bridge"):
             self.bridge.shutdown()
@@ -189,7 +190,13 @@ class BotPlugin(Plugin):
         if msg_id == "bot:spawned":
             name = str(data.get("n", ""))
             ok = bool(data.get("ok", False))
-            self.manager.mark_spawned(name, ok)
+            self.manager.mark_spawned(
+                name,
+                ok,
+                existed=bool(data.get("existed")),
+                adopted=bool(data.get("adopted")),
+                respawned=bool(data.get("respawned")),
+            )
             if ok and data.get("adopted"):
                 self.logger.info(f"已重新接管假人 {name}。")
             elif ok and not data.get("existed") and not data.get("respawned"):
