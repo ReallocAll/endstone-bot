@@ -139,6 +139,75 @@ def snapshot_digest(snapshot: dict[str, Any]) -> str:
 def inventory_digest(inventory: Any) -> str:
     return snapshot_digest(snapshot_inventory(inventory))
 
+class PersistentInventoryStore:
+    VERSION = 1
+
+    def __init__(self, path: Path, logger: Any) -> None:
+        self.path = path
+        self.logger = logger
+        self.available = True
+        self.snapshots: dict[str, dict[str, Any]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or int(data.get("version", 0)) != self.VERSION:
+                raise ValueError("unsupported bot inventory store schema")
+            snapshots = data.get("snapshots", {})
+            if not isinstance(snapshots, dict):
+                raise ValueError("invalid snapshots object")
+            self.snapshots = {
+                str(k): dict(v)
+                for k, v in snapshots.items()
+                if isinstance(v, dict)
+            }
+        except Exception as exc:
+            self.available = False
+            self.logger.error(f"读取 bot_inventories.json 失败，假人背包持久化已 fail-close 禁用: {exc}")
+
+    def _write_snapshots(self, snapshots: dict[str, dict[str, Any]]) -> None:
+        if not self.available:
+            raise RuntimeError("bot inventory store is unavailable")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        payload = {"version": self.VERSION, "snapshots": snapshots}
+        try:
+            with tmp.open("w", encoding="utf-8") as fp:
+                json.dump(payload, fp, ensure_ascii=False, indent=2, sort_keys=True)
+                fp.flush()
+                os.fsync(fp.fileno())
+            os.replace(tmp, self.path)
+            try:
+                dir_fd = os.open(str(self.path.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except Exception:
+                pass
+        except Exception:
+            self.available = False
+            raise
+
+    def put(self, bot_id: str, snapshot: dict[str, Any]) -> None:
+        updated = dict(self.snapshots)
+        updated[str(bot_id)] = dict(snapshot)
+        self._write_snapshots(updated)
+        self.snapshots = updated
+
+    def get(self, bot_id: str) -> dict[str, Any] | None:
+        value = self.snapshots.get(str(bot_id))
+        return dict(value) if isinstance(value, dict) else None
+
+    def remove(self, bot_id: str) -> None:
+        updated = dict(self.snapshots)
+        updated.pop(str(bot_id), None)
+        self._write_snapshots(updated)
+        self.snapshots = updated
+
 
 class InventoryJournal:
     VERSION = 1
