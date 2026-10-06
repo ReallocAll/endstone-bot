@@ -124,6 +124,13 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertLess(persist, shutdown)
         self.assertIn("if inventory_safe:", block)
 
+    def test_reconcile_marks_surviving_reload_bot_live(self):
+        start = self.source.index("    def reconcile_names(")
+        end = self.source.index("\n    def mark_spawned(", start)
+        block = self.source[start:end]
+        self.assertIn("self._checkpoint_live_bot_inventory(fp)", block)
+        self.assertIn("self._inventory_restore_blocked.discard(fp.id)", block)
+
     def test_fresh_spawn_restores_only_parked_inventory(self):
         self.assertIn('state == "LIVE"', self.source)
         self.assertIn('state != "PARKED"', self.source)
