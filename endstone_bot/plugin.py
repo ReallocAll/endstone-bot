@@ -265,8 +265,12 @@ class BotPlugin(Plugin):
             fp = self.manager.get_by_name(name)
             if fp is not None:
                 fp.sim_spawn_confirmed = False
+                fp.sim_has_position = False
+                fp.sim_last_seen_at = 0.0
+                if self.bridge.active:
+                    self.bridge.send_bridge("remove", {"n": fp.name})
             self.logger.error(
-                f"假人 {name} 背包恢复失败；已停止确认其在线状态，避免静默丢失物品。"
+                f"假人 {name} 背包恢复失败；已请求下线该空对象，保留持久化快照等待下次恢复。"
             )
 
         self.server.scheduler.run_task(self, run, delay=1)
