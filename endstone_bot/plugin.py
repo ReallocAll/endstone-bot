@@ -117,10 +117,18 @@ class BotPlugin(Plugin):
             self.logger.warning(f"生成 Beta APIs 离线补丁脚本失败: {exc}")
 
     def on_disable(self) -> None:
+        inventories_saved = True
         if hasattr(self, "manager"):
+            inventories_saved = self.manager.persist_online_bot_inventories()
             self.manager.save()
         if hasattr(self, "bridge"):
-            self.bridge.shutdown()
+            if inventories_saved:
+                self.bridge.shutdown()
+            else:
+                self.logger.error(
+                    "存在假人背包未能持久化；本次禁用不主动 disconnect 假人，"
+                    "以便 /reload 后优先重新接管仍存活的对象。"
+                )
 
     def _tick(self) -> None:
         self._tick_counter += 1
@@ -190,6 +198,8 @@ class BotPlugin(Plugin):
             name = str(data.get("n", ""))
             ok = bool(data.get("ok", False))
             self.manager.mark_spawned(name, ok)
+            if ok and (data.get("adopted") or (not data.get("existed") and not data.get("respawned"))):
+                self._schedule_bot_inventory_restore(name)
             if ok and data.get("adopted"):
                 self.logger.info(f"已重新接管假人 {name}。")
             elif ok and not data.get("existed") and not data.get("respawned"):
@@ -239,6 +249,31 @@ class BotPlugin(Plugin):
             self.logger.warning(
                 f"行为包错误 [{data.get('n', '')}]: {data.get('e', 'unknown error')}"
             )
+
+    def _schedule_bot_inventory_restore(self, name: str, attempts: int = 4) -> None:
+        def run() -> None:
+            result = self.manager.restore_persisted_bot_inventory_by_name(name)
+            if result is True:
+                return
+            if result is None and attempts > 1:
+                self.server.scheduler.run_task(
+                    self,
+                    lambda: self._schedule_bot_inventory_restore(name, attempts - 1),
+                    delay=2,
+                )
+                return
+            fp = self.manager.get_by_name(name)
+            if fp is not None:
+                fp.sim_spawn_confirmed = False
+                fp.sim_has_position = False
+                fp.sim_last_seen_at = 0.0
+                if self.bridge.active:
+                    self.bridge.send_bridge("remove", {"n": fp.name})
+            self.logger.error(
+                f"假人 {name} 背包恢复失败；已请求下线该空对象，保留持久化快照等待下次恢复。"
+            )
+
+        self.server.scheduler.run_task(self, run, delay=1)
 
     def _handle_trident_result(self, data: dict[str, Any]) -> None:
         name = str(data.get("n", "") or "假人")
@@ -460,6 +495,10 @@ class BotPlugin(Plugin):
         self.manager.clear_remote()
         self.manager.bots.clear()
         self.manager.name_index.clear()
+        try:
+            self.manager.bot_inventory_store.clear()
+        except Exception as exc:
+            self.logger.warning(f"清理假人背包持久化数据失败: {exc}")
         self.manager.save()
         sender.send_message(f"§a已清除全部 {count} 个假人。")
         return True

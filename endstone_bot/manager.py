@@ -10,6 +10,7 @@ from endstone.command import CommandSender
 
 from endstone_bot.inventory_journal import (
     InventoryJournal,
+    PersistentInventoryStore,
     empty_inventory,
     inventory_digest,
     restore_inventory,
@@ -27,6 +28,7 @@ class FakeBotManager:
         self._logger = logger
         self._db_path = data_folder / "bots.json"
         self.inventory_journal = InventoryJournal(data_folder / "inventory_journal.json", logger)
+        self.bot_inventory_store = PersistentInventoryStore(data_folder / "bot_inventories.json", logger)
         self.bots: dict[str, FakePlayer] = {}
         self.name_index: dict[str, str] = {}
         self._spawn_cooldowns: dict[str, float] = {}
@@ -122,6 +124,77 @@ class FakeBotManager:
 
     def inventory_session(self, fp: FakePlayer) -> dict[str, Any] | None:
         return self.inventory_journal.get_for_bot(fp.id)
+
+    def persist_bot_inventory(self, fp: FakePlayer) -> bool:
+        if self.inventory_locked(fp):
+            return True
+        if not self.bot_inventory_store.available:
+            self._logger.error(f"无法保存假人背包 [{fp.name}]：持久化存储不可用")
+            return False
+        player = self._online_player_named(fp.name)
+        if player is None or not hasattr(player, "inventory"):
+            return True
+        try:
+            snapshot = snapshot_inventory(player.inventory)
+            self.bot_inventory_store.put(fp.id, snapshot)
+            return True
+        except Exception as exc:
+            self._logger.error(f"保存假人背包失败 [{fp.name}]: {exc}")
+            return False
+
+    def persist_online_bot_inventories(self) -> bool:
+        ok = True
+        for fp in list(self.bots.values()):
+            if self.inventory_locked(fp):
+                continue
+            player = self._online_player_named(fp.name)
+            if player is None or not hasattr(player, "inventory"):
+                continue
+            if not self.persist_bot_inventory(fp):
+                ok = False
+        return ok
+
+    def restore_persisted_bot_inventory(self, fp: FakePlayer) -> bool | None:
+        if self.inventory_locked(fp):
+            return True
+        if not self.bot_inventory_store.available:
+            self._logger.error(f"无法恢复假人背包 [{fp.name}]：持久化存储不可用")
+            return False
+        snapshot = self.bot_inventory_store.get(fp.id)
+        if snapshot is None:
+            return True
+        player = self._online_player_named(fp.name)
+        if player is None or not hasattr(player, "inventory"):
+            return None
+        try:
+            current_digest = inventory_digest(player.inventory)
+            saved_digest = snapshot_digest(snapshot)
+            if current_digest == saved_digest:
+                self.bot_inventory_store.remove(fp.id)
+                return True
+            if not player.inventory.is_empty:
+                # A surviving/adopted SimulatedPlayer is the authoritative live copy.
+                # Consume the escrow snapshot instead of overwriting current items.
+                self.bot_inventory_store.remove(fp.id)
+                return True
+            restore_inventory(player.inventory, snapshot)
+            if inventory_digest(player.inventory) != saved_digest:
+                raise RuntimeError("restored inventory verification failed")
+            self.bot_inventory_store.remove(fp.id)
+            return True
+        except Exception as exc:
+            try:
+                empty_inventory(player.inventory)
+            except Exception:
+                pass
+            self._logger.error(f"恢复假人背包失败 [{fp.name}]: {exc}")
+            return False
+
+    def restore_persisted_bot_inventory_by_name(self, name: str) -> bool | None:
+        fp = self.get_by_name(name)
+        if fp is None:
+            return True
+        return self.restore_persisted_bot_inventory(fp)
 
     def inventory_locked(self, fp: FakePlayer) -> bool:
         return self.inventory_session(fp) is not None
@@ -727,6 +800,11 @@ class FakeBotManager:
         for lower, fp in known.items():
             if lower in remote:
                 if not fp.desired_online and not self.inventory_locked(fp):
+                    if not self.persist_bot_inventory(fp):
+                        self._logger.error(
+                            f"拒绝下线 {fp.name}：背包持久化失败，保留当前活对象。"
+                        )
+                        continue
                     self._bridge.send_bridge("remove", {"n": remote[lower]})
                     fp.sim_spawn_confirmed = False
                     fp.sim_has_position = False
@@ -760,7 +838,12 @@ class FakeBotManager:
             return
         if not fp.desired_online and not self.inventory_locked(fp):
             if self._bridge.active:
-                self._bridge.send_bridge("remove", {"n": fp.name})
+                if self.persist_bot_inventory(fp):
+                    self._bridge.send_bridge("remove", {"n": fp.name})
+                else:
+                    self._logger.error(
+                        f"拒绝下线 {fp.name}：背包持久化失败，保留当前活对象。"
+                    )
             return
         try:
             nx, ny, nz = float(x), float(y), float(z)
@@ -839,6 +922,9 @@ class FakeBotManager:
             return False, "假人背包正在整理，不能切换上下线状态。"
 
         desired = bool(online)
+        if not desired and not self.persist_bot_inventory(fp):
+            return False, f"{fp.name} 背包保存失败，已取消下线。"
+
         fp.desired_online = desired
         if not desired:
             fp.sim_spawn_confirmed = False
@@ -872,6 +958,10 @@ class FakeBotManager:
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
+        try:
+            self.bot_inventory_store.remove(fp.id)
+        except Exception as exc:
+            self._logger.warning(f"删除假人背包快照失败 [{fp.name}]: {exc}")
         self.save()
         return True, f"已删除假人 {fp.name}。"
 
@@ -883,6 +973,10 @@ class FakeBotManager:
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
+        try:
+            self.bot_inventory_store.remove(fp.id)
+        except Exception as exc:
+            self._logger.warning(f"删除假人背包快照失败 [{fp.name}]: {exc}")
         self.save()
 
     def clear_remote(self) -> None:

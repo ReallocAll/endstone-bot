@@ -48,6 +48,51 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertIn("on_error=self._on_bridge_command_error", self.plugin_source)
         self.assertIn('getattr(self, "_bridge_command_sender", self.server.command_sender)', self.plugin_source)
 
+    def test_bot_inventory_persistence_is_fail_closed_and_one_shot(self):
+        self.assertIn("PersistentInventoryStore", self.source)
+        self.assertIn('bot_inventories.json', self.source)
+        self.assertIn("def persist_bot_inventory(", self.source)
+        self.assertIn("def persist_online_bot_inventories(", self.source)
+        self.assertIn("def restore_persisted_bot_inventory(", self.source)
+        self.assertIn("self.bot_inventory_store.put(fp.id, snapshot)", self.source)
+        self.assertIn("self.bot_inventory_store.remove(fp.id)", self.source)
+        self.assertIn("if not player.inventory.is_empty:", self.source)
+        self.assertIn("restore_inventory(player.inventory, snapshot)", self.source)
+        self.assertIn("empty_inventory(player.inventory)", self.source)
+
+    def test_manual_offline_saves_inventory_before_disconnect(self):
+        start = self.source.index("    def set_online(")
+        end = self.source.index("\n    def remove(", start)
+        block = self.source[start:end]
+        persist = block.index("persist_bot_inventory(fp)")
+        desired = block.index("fp.desired_online = desired")
+        remove = block.index('send_bridge("remove"')
+        self.assertLess(persist, desired)
+        self.assertLess(desired, remove)
+        self.assertIn("背包保存失败，已取消下线", block)
+
+    def test_shutdown_checkpoints_inventories_before_bridge_shutdown(self):
+        start = self.plugin_source.index("    def on_disable(")
+        end = self.plugin_source.index("\n    def _tick(", start)
+        block = self.plugin_source[start:end]
+        persist = block.index("persist_online_bot_inventories()")
+        shutdown = block.index("self.bridge.shutdown()")
+        self.assertLess(persist, shutdown)
+        self.assertIn("if inventories_saved:", block)
+
+    def test_spawn_restore_retries_and_removes_empty_bot_on_failure(self):
+        self.assertIn("def _schedule_bot_inventory_restore(", self.plugin_source)
+        self.assertIn("restore_persisted_bot_inventory_by_name(name)", self.plugin_source)
+        self.assertIn("attempts > 1", self.plugin_source)
+        self.assertIn('send_bridge("remove", {"n": fp.name})', self.plugin_source)
+        self.assertIn("保留持久化快照等待下次恢复", self.plugin_source)
+
+    def test_persistent_inventory_store_is_atomic(self):
+        self.assertIn("class PersistentInventoryStore:", self.journal_source)
+        self.assertIn("os.fsync(fp.fileno())", self.journal_source)
+        self.assertIn("os.replace(tmp, self.path)", self.journal_source)
+        self.assertIn("def clear(self)", self.journal_source)
+
     def test_inventory_borrow_is_exclusive_and_journaled(self):
         self.assertIn("InventoryJournal", self.source)
         self.assertIn('self._put_inventory_session(fp, session, "BOT_CLEARED")', self.source)
