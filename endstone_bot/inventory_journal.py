@@ -208,6 +208,10 @@ class PersistentInventoryStore:
         self._write_snapshots(updated)
         self.snapshots = updated
 
+    def clear(self) -> None:
+        self._write_snapshots({})
+        self.snapshots = {}
+
 
 class InventoryJournal:
     VERSION = 1
