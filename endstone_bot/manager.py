@@ -10,6 +10,7 @@ from endstone.command import CommandSender
 
 from endstone_bot.inventory_journal import (
     InventoryJournal,
+    PersistentInventoryStore,
     empty_inventory,
     inventory_digest,
     restore_inventory,
@@ -27,6 +28,7 @@ class FakeBotManager:
         self._logger = logger
         self._db_path = data_folder / "bots.json"
         self.inventory_journal = InventoryJournal(data_folder / "inventory_journal.json", logger)
+        self.bot_inventory_store = PersistentInventoryStore(data_folder / "bot_inventories.json", logger)
         self.bots: dict[str, FakePlayer] = {}
         self.name_index: dict[str, str] = {}
         self._spawn_cooldowns: dict[str, float] = {}
@@ -122,6 +124,64 @@ class FakeBotManager:
 
     def inventory_session(self, fp: FakePlayer) -> dict[str, Any] | None:
         return self.inventory_journal.get_for_bot(fp.id)
+
+    def persist_bot_inventory(self, fp: FakePlayer) -> bool:
+        if self.inventory_locked(fp):
+            return True
+        if not self.bot_inventory_store.available:
+            self._logger.error(f"无法保存假人背包 [{fp.name}]：持久化存储不可用")
+            return False
+        player = self._online_player_named(fp.name)
+        if player is None or not hasattr(player, "inventory"):
+            return True
+        try:
+            snapshot = snapshot_inventory(player.inventory)
+            self.bot_inventory_store.put(fp.id, snapshot)
+            return True
+        except Exception as exc:
+            self._logger.error(f"保存假人背包失败 [{fp.name}]: {exc}")
+            return False
+
+    def persist_online_bot_inventories(self) -> bool:
+        ok = True
+        for fp in list(self.bots.values()):
+            if self.inventory_locked(fp):
+                continue
+            player = self._online_player_named(fp.name)
+            if player is None or not hasattr(player, "inventory"):
+                continue
+            if not self.persist_bot_inventory(fp):
+                ok = False
+        return ok
+
+    def restore_persisted_bot_inventory(self, fp: FakePlayer) -> bool:
+        if self.inventory_locked(fp):
+            return True
+        if not self.bot_inventory_store.available:
+            self._logger.error(f"无法恢复假人背包 [{fp.name}]：持久化存储不可用")
+            return False
+        snapshot = self.bot_inventory_store.get(fp.id)
+        if snapshot is None:
+            return True
+        player = self._online_player_named(fp.name)
+        if player is None or not hasattr(player, "inventory"):
+            return False
+        try:
+            current_digest = inventory_digest(player.inventory)
+            saved_digest = snapshot_digest(snapshot)
+            if current_digest == saved_digest:
+                return True
+            if not player.inventory.is_empty:
+                # Reload adoption keeps the still-live SimulatedPlayer authoritative.
+                self.bot_inventory_store.put(fp.id, snapshot_inventory(player.inventory))
+                return True
+            restore_inventory(player.inventory, snapshot)
+            if inventory_digest(player.inventory) != saved_digest:
+                raise RuntimeError("restored inventory verification failed")
+            return True
+        except Exception as exc:
+            self._logger.error(f"恢复假人背包失败 [{fp.name}]: {exc}")
+            return False
 
     def inventory_locked(self, fp: FakePlayer) -> bool:
         return self.inventory_session(fp) is not None
