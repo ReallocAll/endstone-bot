@@ -878,6 +878,9 @@ class FakeBotManager:
                     fp.sim_last_seen_at = 0.0
                     continue
                 fp.sim_spawn_confirmed = True
+                if not self.inventory_locked(fp):
+                    self._inventory_restore_blocked.discard(fp.id)
+                    self._checkpoint_live_bot_inventory(fp)
             elif not fp.is_recently_seen():
                 fp.sim_spawn_confirmed = False
         for lower, remote_name in remote.items():
