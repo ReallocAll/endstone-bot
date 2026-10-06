@@ -811,8 +811,16 @@ class FakeBotManager:
             self._bridge.send_bridge("remove", {"n": fp.name})
             return
         fp.sim_spawn_confirmed = bool(ok)
-        if ok and self.inventory_locked(fp):
+        if not ok:
+            return
+        if self.inventory_locked(fp):
             self.on_bot_spawned_for_inventory(name)
+            return
+        if not self.restore_persisted_bot_inventory(fp):
+            fp.sim_spawn_confirmed = False
+            self._logger.error(
+                f"假人 {fp.name} 已生成但背包恢复失败；已拒绝继续视为在线，避免静默丢失物品。"
+            )
 
     def update_position(self, name: str, x: Any, y: Any, z: Any, dimension: str) -> None:
         fp = self.get_by_name(name)
@@ -899,6 +907,9 @@ class FakeBotManager:
             return False, "假人背包正在整理，不能切换上下线状态。"
 
         desired = bool(online)
+        if not desired and not self.persist_bot_inventory(fp):
+            return False, f"{fp.name} 背包保存失败，已取消下线。"
+
         fp.desired_online = desired
         if not desired:
             fp.sim_spawn_confirmed = False
@@ -932,6 +943,10 @@ class FakeBotManager:
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
+        try:
+            self.bot_inventory_store.remove(fp.id)
+        except Exception as exc:
+            self._logger.warning(f"删除假人背包快照失败 [{fp.name}]: {exc}")
         self.save()
         return True, f"已删除假人 {fp.name}。"
 
@@ -943,6 +958,10 @@ class FakeBotManager:
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
+        try:
+            self.bot_inventory_store.remove(fp.id)
+        except Exception as exc:
+            self._logger.warning(f"删除假人背包快照失败 [{fp.name}]: {exc}")
         self.save()
 
     def clear_remote(self) -> None:
