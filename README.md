@@ -15,6 +15,7 @@
 - “移动到我这里”负责保存假人的位置和世界空间视线方向；“投掷三叉戟”只使用这个已保存姿态，不会再次把假人传送到操作者身上。假人通过 standalone `GameTest.spawnSimulatedPlayer(DimensionLocation, name, GameMode.Survival)` 直接生成在目标维度和世界坐标，不再绑定 `Test`。视角同步直接把世界目标坐标传给 `lookAtLocation(..., LookDuration.UntilMove)`，不再做 GameTest 相对坐标转换。三叉戟仍只使用背包内已有物品：临时换到快捷栏 0，执行 `useItemInSlot(0)`，10 tick 后 `stopUsingItem()`，随后恢复原槽位。投掷阶段不会再次移动或修改视角；投掷前如果假人当前实际位置 1.0 格欧氏距离内有其他玩家则拒绝。不会生成或补充物品，也不自行构造 projectile。
 - 假人管理菜单新增“整理背包”。开始前插件会把玩家和假人的主背包完整 ItemStack/NBT 快照写入事务日志，然后清空并下线假人，把假人的主背包临时交给玩家整理；盔甲和副手不会参与同步。整理完成后，把希望假人拿着的物品拿在手上，再使用 `/bot` 重新打开假人菜单并选择“完成背包整理”。归还后假人会拿着你完成整理时手上拿着的物品，同时玩家原来的主背包会恢复。整个过程使用持久化事务状态和 digest 校验，任何歧义都会 fail-close，而不是复制物品。
 - 假人可以手动上线/下线；该状态会持久化。手动下线后不会被定时补生或 bridge reconcile 自动拉回。假人管理中的实际操作完成后 GUI 会关闭，玩家可移动、整理背包或调整站位后再手动重新打开菜单继续下一步。
+- 假人的运行时背包独立持久化到 `bot_inventories.json`：手动下线、正常关服和 `/reload` 前会先保存主背包、快捷栏选择、盔甲与副手，再允许 SimulatedPlayer 断开；重新创建时只有确认目标背包为空并且磁盘状态为安全的 `PARKED` 快照才会恢复。未安全下线的陈旧 `LIVE` 快照不会自动物化，以避免刷物。
 - 行为包不再执行 `GameTest.register`、`/gametest run` 或创建 GameTest 结构，因此不会触发 GameTest 对 `doDayLightCycle`、`doMobSpawning`、`randomTickSpeed` 等全局游戏规则的临时覆盖；4.5.3 的 gamerule 恢复补偿逻辑也已删除。
 - 假人死亡后会通过 `SimulatedPlayer.respawn()` 自动重生，并恢复保存的挂机锚点和视角；若原对象无法复活，则回退到重新创建流程。
 - Behavior Pack 通信使用启动期随机 token + protocol version，并限制为 Server 来源。
@@ -165,6 +166,7 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 ## 数据
 
 - `bots.json`：持久化假人定义、挂机锚点、pitch/yaw 和世界空间视线方向。
+- `bot_inventories.json`：假人生命周期背包快照与 LIVE/PARKED 状态；包含主背包、快捷栏选择、盔甲和副手，采用原子写入 + fsync。
 - `config.json`：全局资源限制与位置守护设置。
 - `enable_beta.py`：插件自动生成的显式离线 Beta APIs 补丁脚本。
 - `level_dat_backups/<world>/`：手动执行补丁脚本时创建的校验备份。
