@@ -198,6 +198,8 @@ class BotPlugin(Plugin):
             name = str(data.get("n", ""))
             ok = bool(data.get("ok", False))
             self.manager.mark_spawned(name, ok)
+            if ok and (data.get("adopted") or (not data.get("existed") and not data.get("respawned"))):
+                self._schedule_bot_inventory_restore(name)
             if ok and data.get("adopted"):
                 self.logger.info(f"已重新接管假人 {name}。")
             elif ok and not data.get("existed") and not data.get("respawned"):
@@ -247,6 +249,27 @@ class BotPlugin(Plugin):
             self.logger.warning(
                 f"行为包错误 [{data.get('n', '')}]: {data.get('e', 'unknown error')}"
             )
+
+    def _schedule_bot_inventory_restore(self, name: str, attempts: int = 4) -> None:
+        def run() -> None:
+            result = self.manager.restore_persisted_bot_inventory_by_name(name)
+            if result is True:
+                return
+            if result is None and attempts > 1:
+                self.server.scheduler.run_task(
+                    self,
+                    lambda: self._schedule_bot_inventory_restore(name, attempts - 1),
+                    delay=2,
+                )
+                return
+            fp = self.manager.get_by_name(name)
+            if fp is not None:
+                fp.sim_spawn_confirmed = False
+            self.logger.error(
+                f"假人 {name} 背包恢复失败；已停止确认其在线状态，避免静默丢失物品。"
+            )
+
+        self.server.scheduler.run_task(self, run, delay=1)
 
     def _handle_trident_result(self, data: dict[str, Any]) -> None:
         name = str(data.get("n", "") or "假人")
@@ -468,6 +491,10 @@ class BotPlugin(Plugin):
         self.manager.clear_remote()
         self.manager.bots.clear()
         self.manager.name_index.clear()
+        try:
+            self.manager.bot_inventory_store.clear()
+        except Exception as exc:
+            self.logger.warning(f"清理假人背包持久化数据失败: {exc}")
         self.manager.save()
         sender.send_message(f"§a已清除全部 {count} 个假人。")
         return True
