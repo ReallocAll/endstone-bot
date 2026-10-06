@@ -154,7 +154,7 @@ class FakeBotManager:
                 ok = False
         return ok
 
-    def restore_persisted_bot_inventory(self, fp: FakePlayer) -> bool:
+    def restore_persisted_bot_inventory(self, fp: FakePlayer) -> bool | None:
         if self.inventory_locked(fp):
             return True
         if not self.bot_inventory_store.available:
@@ -165,23 +165,36 @@ class FakeBotManager:
             return True
         player = self._online_player_named(fp.name)
         if player is None or not hasattr(player, "inventory"):
-            return False
+            return None
         try:
             current_digest = inventory_digest(player.inventory)
             saved_digest = snapshot_digest(snapshot)
             if current_digest == saved_digest:
+                self.bot_inventory_store.remove(fp.id)
                 return True
             if not player.inventory.is_empty:
-                # Reload adoption keeps the still-live SimulatedPlayer authoritative.
-                self.bot_inventory_store.put(fp.id, snapshot_inventory(player.inventory))
+                # A surviving/adopted SimulatedPlayer is the authoritative live copy.
+                # Consume the escrow snapshot instead of overwriting current items.
+                self.bot_inventory_store.remove(fp.id)
                 return True
             restore_inventory(player.inventory, snapshot)
             if inventory_digest(player.inventory) != saved_digest:
                 raise RuntimeError("restored inventory verification failed")
+            self.bot_inventory_store.remove(fp.id)
             return True
         except Exception as exc:
+            try:
+                empty_inventory(player.inventory)
+            except Exception:
+                pass
             self._logger.error(f"恢复假人背包失败 [{fp.name}]: {exc}")
             return False
+
+    def restore_persisted_bot_inventory_by_name(self, name: str) -> bool | None:
+        fp = self.get_by_name(name)
+        if fp is None:
+            return True
+        return self.restore_persisted_bot_inventory(fp)
 
     def inventory_locked(self, fp: FakePlayer) -> bool:
         return self.inventory_session(fp) is not None
@@ -811,16 +824,8 @@ class FakeBotManager:
             self._bridge.send_bridge("remove", {"n": fp.name})
             return
         fp.sim_spawn_confirmed = bool(ok)
-        if not ok:
-            return
-        if self.inventory_locked(fp):
+        if ok and self.inventory_locked(fp):
             self.on_bot_spawned_for_inventory(name)
-            return
-        if not self.restore_persisted_bot_inventory(fp):
-            fp.sim_spawn_confirmed = False
-            self._logger.error(
-                f"假人 {fp.name} 已生成但背包恢复失败；已拒绝继续视为在线，避免静默丢失物品。"
-            )
 
     def update_position(self, name: str, x: Any, y: Any, z: Any, dimension: str) -> None:
         fp = self.get_by_name(name)
