@@ -88,7 +88,7 @@ jobs:
     name: Create GitHub Release
     needs: wheel
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.repository == 'ReallocAll/endstone-bot' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.head_commit.message == 'release: bot 4.7.0 verified protocol 3')
     permissions:
       contents: write
     steps:
@@ -99,9 +99,41 @@ jobs:
           merge-multiple: true
           skip-decompress: true
 
+      - name: Verify release wheel and record checksum
+        shell: bash
+        run: |
+          test "$(find artifacts -name '*.whl' | wc -l)" -eq 1
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            test -f artifacts/endstone_bot-4.7.0-py3-none-any.whl
+          fi
+          cd artifacts
+          sha256sum *.whl > SHA256SUMS
+
+      - name: Refuse an existing one-time release tag
+        if: github.ref == 'refs/heads/main'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            try {
+              await github.rest.git.getRef({...context.repo, ref: 'tags/v4.7.0'});
+            } catch (error) {
+              if (error.status === 404) return;
+              throw error;
+            }
+            throw new Error('v4.7.0 already exists; refusing to change it');
+
       - name: Create Release and attach wheel
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.whl
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.7.0' }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            artifacts/*.whl
+            artifacts/SHA256SUMS
+          body: |
+            Protocol 3 boundary refactor. Includes behavior pack 4.3.3.
+            Upgrade the wheel and matching bundled behavior pack together while BDS is stopped, then fully restart. Python-only hot reload is incompatible with the older running pack.
+            See README runtime identity and recovery section. Fresh join-item conflicts preserve both live items and escrow; reconcile gifts before /bot inventory <name> retry.
+            Tests and wheel verification passed for the exact source commit linked by this release. Real BDS reload/join ordering remains an integration validation step.
           generate_release_notes: true
           fail_on_unmatched_files: true

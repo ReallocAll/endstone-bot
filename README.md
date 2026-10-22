@@ -202,3 +202,13 @@ Python 同时验证活对象上的定义、运行时和本次请求标签及 UUI
 身份标签使用 Endstone 0.11 `Actor.scoreboard_tags` 和 Script API `Entity.getTags/addTag/removeTag`；
 标签少于 256 字符。仓库测试使用合成宿主验证 Python 决策及完整 JS 编码流程，
 不替代真实 BDS 中的 join 事件顺序、标签可见时序、死亡/重生和插件 reload 验证。
+
+### 4.7.0 离线升级步骤
+
+1. 在旧版本仍正常运行时完成所有背包整理，停止投掷动作，再正常关闭 BDS。若日志提示库存保存失败，先处理活库存，不要强制重启。
+2. 备份完整世界目录和 `plugins/bot/`。在服务器当前 Python 包环境中执行 `uv pip install --upgrade ./endstone_bot-4.7.0-py3-none-any.whl`（需要代理时可写 `p uv pip ...`）。
+3. 从该 wheel 的 `endstone_bot/behavior_pack/` 取出 `manifest.json` 与 `scripts/main.js`，替换当前世界的 `behavior_packs/endstone_bot_bridge/` 中对应文件。先备份原目录，不要从其他版本拼装文件。
+4. 在该世界 `world_behavior_packs.json` 中保留其他行为包；把 pack_id 为 `a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f` 的条目版本设为 `[4,3,3]`（不存在则添加）。勿修改 `level.dat`，也无需重新启用已有 Beta APIs。
+5. 完整启动 BDS，确认 `/bot status` 显示 protocol 3 桥接在线。先验证一个有物品的假人上下线与库存，再恢复正常使用。如果出现恢复阻塞，保留快照并按上节处理赠送物品。
+
+也可让新插件首次启动时自动部署行为包及注册版本，但此时运行中的仍可能是旧脚本；必须再正常停服并完整启动一次。仅替换 wheel 后 `/reload` 不能完成协议升级。

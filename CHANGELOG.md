@@ -1,4 +1,4 @@
-## Unreleased
+## 4.7.0 (2026-10-22)
 
 - Bind inventory access and asynchronous bridge messages to current definition and verified runtime identity.
 - Preserve escrow on fresh join-item conflicts; add explicit inventory recovery retry.

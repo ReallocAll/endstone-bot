@@ -1,12 +1,14 @@
 import configparser
 import zipfile
+import json
+import re
 from pathlib import Path
 import unittest
 
 
 class WheelTests(unittest.TestCase):
     def test_release_entry_point_and_payload(self):
-        wheels = list(Path("dist").glob("endstone_bot-4.6.3-*.whl"))
+        wheels = list(Path("dist").glob("endstone_bot-4.7.0-*.whl"))
         self.assertEqual(len(wheels), 1)
         with zipfile.ZipFile(wheels[0]) as zf:
             names = set(zf.namelist())
@@ -25,6 +27,15 @@ class WheelTests(unittest.TestCase):
                 "endstone_bot/behavior_pack/scripts/main.js",
             ):
                 self.assertIn(path, names)
+            manifest = json.loads(zf.read("endstone_bot/behavior_pack/manifest.json"))
+            self.assertEqual(manifest["header"]["version"], [4, 3, 3])
+            self.assertEqual(manifest["modules"][0]["version"], [4, 3, 3])
+            for member in ("endstone_bot/behavior_pack/scripts/main.js", "endstone_bot/behavior_pack/manifest.json",
+                           "endstone_bot/bridge.py", "endstone_bot/plugin.py"):
+                self.assertEqual(zf.read(member), Path(member).read_bytes(), member)
+            self.assertIn(b"BRIDGE_PROTOCOL = 3", zf.read("endstone_bot/bridge.py"))
+            self.assertIn(b"const PROTOCOL = 3", zf.read("endstone_bot/behavior_pack/scripts/main.js"))
+            self.assertIn(b'__version__ = "4.7.0"', zf.read("endstone_bot/__init__.py"))
             ep_name = next(x for x in names if x.endswith(".dist-info/entry_points.txt"))
             cfg = configparser.ConfigParser()
             cfg.read_string(zf.read(ep_name).decode())
