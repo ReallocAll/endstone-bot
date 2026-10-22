@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ class FakeBotManager:
         self.name_index: dict[str, str] = {}
         self._spawn_cooldowns: dict[str, float] = {}
         self._last_spawn_request: dict[str, float] = {}
+        self._runtime: dict[str, dict[str, str]] = {}
+        self._pending_spawn: dict[str, str] = {}
         self._dirty = False
 
     def restore(self) -> None:
@@ -91,6 +94,8 @@ class FakeBotManager:
         return rows
 
     def can_manage(self, sender: Any, fp: FakePlayer) -> bool:
+        if getattr(self._plugin, "_stopping", False) or not self.is_current(fp):
+            return False
         if self._plugin.is_admin(sender):
             return True
         sender_uuid = str(getattr(sender, "unique_id", "") or "")
@@ -98,6 +103,54 @@ class FakeBotManager:
         if fp.owner_uuid:
             return bool(sender_uuid and sender_uuid == fp.owner_uuid)
         return bool(sender_name and sender_name.lower() == fp.owner_name.lower())
+
+    def is_current(self, fp: FakePlayer) -> bool:
+        return self.bots.get(fp.id) is fp and self.name_index.get(fp.name.lower()) == fp.id
+
+    def _bot_player(self, fp: FakePlayer) -> Any | None:
+        """只解析当前已认证生成请求对应的运行时对象，名称本身不是身份。"""
+        if not self.is_current(fp) or not self._bridge.active:
+            return None
+        binding = self._runtime.get(fp.id)
+        if binding is None or not fp.sim_spawn_confirmed:
+            return None
+        player = self._online_player_named(fp.name)
+        if player is None:
+            return None
+        try:
+            tags = player.scoreboard_tags
+            if ("endstone_bot_def:" + fp.id not in tags or
+                    "endstone_bot_runtime:" + binding["runtime"] not in tags or
+                    "endstone_bot_request:" + binding["generation"] not in tags):
+                return None
+            uuid = str(player.unique_id)
+            if not uuid or (binding.get("uuid") and binding["uuid"] != uuid):
+                return None
+            binding["uuid"] = uuid
+            return player
+        except Exception:
+            return None
+
+    def matches_runtime(self, data: dict[str, Any]) -> bool:
+        fp = self.bots.get(str(data.get("definition", "")))
+        binding = self._runtime.get(fp.id) if fp is not None else None
+        return bool(fp is not None and self.is_current(fp) and fp.name == data.get("n") and binding
+                    and data.get("generation") == binding["generation"]
+                    and data.get("runtime") == binding["runtime"])
+
+    def accept_spawn(self, data: dict[str, Any]) -> FakePlayer | None:
+        fp = self.bots.get(str(data.get("definition", "")))
+        generation = data.get("generation")
+        runtime = data.get("runtime")
+        if (fp is None or not self.is_current(fp) or data.get("n") != fp.name or
+                not isinstance(generation, str) or self._pending_spawn.get(fp.id) != generation or
+                not isinstance(runtime, str) or len(runtime) != 32 or
+                any(c not in "0123456789abcdef" for c in runtime) or data.get("ok") is not True):
+            return None
+        self._pending_spawn.pop(fp.id, None)
+        self._runtime[fp.id] = {"generation": generation, "runtime": runtime}
+        self.mark_spawned(fp.name, True)
+        return fp
 
     def _player_identity(self, sender: Any) -> tuple[str, str, str]:
         name = str(getattr(sender, "name", "") or "")
@@ -131,11 +184,14 @@ class FakeBotManager:
         if not self.bot_inventory_store.available:
             self._logger.error(f"无法保存假人背包 [{fp.name}]：持久化存储不可用")
             return False
-        player = self._online_player_named(fp.name)
+        player = self._bot_player(fp)
         if player is None or not hasattr(player, "inventory"):
-            return True
+            return self._online_player_named(fp.name) is None
+        if self.bot_inventory_store.get(fp.id) is not None:
+            return False  # Unresolved escrow must never be replaced by join gifts.
         try:
             snapshot = snapshot_inventory(player.inventory)
+            snapshot["runtime"] = self._runtime[fp.id]["runtime"]
             self.bot_inventory_store.put(fp.id, snapshot)
             return True
         except Exception as exc:
@@ -145,11 +201,6 @@ class FakeBotManager:
     def persist_online_bot_inventories(self) -> bool:
         ok = True
         for fp in list(self.bots.values()):
-            if self.inventory_locked(fp):
-                continue
-            player = self._online_player_named(fp.name)
-            if player is None or not hasattr(player, "inventory"):
-                continue
             if not self.persist_bot_inventory(fp):
                 ok = False
         return ok
@@ -163,28 +214,30 @@ class FakeBotManager:
         snapshot = self.bot_inventory_store.get(fp.id)
         if snapshot is None:
             return True
-        player = self._online_player_named(fp.name)
+        player = self._bot_player(fp)
         if player is None or not hasattr(player, "inventory"):
             return None
+        restoring = False
         try:
             current_digest = inventory_digest(player.inventory)
             saved_digest = snapshot_digest(snapshot)
-            if current_digest == saved_digest:
+            if current_digest == saved_digest or snapshot.get("runtime") == self._runtime[fp.id]["runtime"]:
                 self.bot_inventory_store.remove(fp.id)
                 return True
             if not player.inventory.is_empty:
-                # A surviving/adopted SimulatedPlayer is the authoritative live copy.
-                # Consume the escrow snapshot instead of overwriting current items.
-                self.bot_inventory_store.remove(fp.id)
-                return True
+                # Fresh join gifts are not evidence of ownership of the escrow.
+                return False
+            restoring = True
             restore_inventory(player.inventory, snapshot)
             if inventory_digest(player.inventory) != saved_digest:
                 raise RuntimeError("restored inventory verification failed")
+            restoring = False
             self.bot_inventory_store.remove(fp.id)
             return True
         except Exception as exc:
             try:
-                empty_inventory(player.inventory)
+                if restoring:
+                    empty_inventory(player.inventory)
             except Exception:
                 pass
             self._logger.error(f"恢复假人背包失败 [{fp.name}]: {exc}")
@@ -243,11 +296,13 @@ class FakeBotManager:
             return False, "该假人的背包已经处于整理事务中。"
         if not fp.desired_online:
             return False, "假人当前处于手动下线状态，请先上线后再整理背包。"
+        if self.bot_inventory_store.get(fp.id) is not None:
+            return False, "假人背包恢复尚未完成，请先处理持久化快照。"
         _, player_uuid, player_name = self._player_identity(sender)
         if self.inventory_journal.get_for_player(player_uuid, player_name) is not None:
             return False, "你已经有一个未完成的假人背包整理事务。"
 
-        bot_player = self._online_player_named(fp.name)
+        bot_player = self._bot_player(fp)
         if bot_player is None or not hasattr(bot_player, "inventory"):
             return False, "假人当前不在线，无法安全读取背包。"
 
@@ -280,7 +335,7 @@ class FakeBotManager:
                 raise RuntimeError("failed to clear bot inventory")
             self._put_inventory_session(fp, session, "BOT_CLEARED")
 
-            remove_sent = self._bridge.send_bridge("remove", {"n": fp.name})
+            remove_sent = self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
             if not remove_sent:
                 # Nothing has touched the player's inventory, so this rollback
                 # cannot duplicate the bot's items.
@@ -346,7 +401,19 @@ class FakeBotManager:
                 self.spawn(fp, force=True)
 
 
+    def retry_inventory_restore(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
+        if not self.can_manage(sender, fp):
+            return False, "你没有权限管理该假人。"
+        if self.inventory_locked(fp):
+            return False, "背包整理事务未结束，请先处理当前事务。"
+        result = self.restore_persisted_bot_inventory(fp)
+        if result is True:
+            return True, "假人背包恢复已完成。"
+        return False, "恢复仍被阻止：请管理员先安全保管新生成物品，再清空该假人的主背包并重试；不要删除快照。"
+
     def finish_inventory_edit(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
+        if not self.can_manage(sender, fp):
+            return False, "你没有权限管理该假人。"
         session = self.inventory_session(fp)
         if session is None:
             return False, "该假人没有正在进行的背包整理事务。"
@@ -370,7 +437,7 @@ class FakeBotManager:
         if session is None:
             return
         state = str(session.get("state", ""))
-        bot_player = self._online_player_named(fp.name)
+        bot_player = self._bot_player(fp)
         if bot_player is None or not hasattr(bot_player, "inventory"):
             return
 
@@ -390,7 +457,7 @@ class FakeBotManager:
         if state == "ROLLBACK_FULL_WAIT_SPAWN":
             player = self._online_player_named(str(session.get("player_name", "")))
             if player is None or not self._session_matches_player(session, player):
-                self._bridge.send_bridge("remove", {"n": fp.name})
+                self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
                 self._put_inventory_session(fp, session, "ROLLBACK_FULL_WAIT_PLAYER")
                 return
             try:
@@ -420,7 +487,7 @@ class FakeBotManager:
         if state == "PLAYER_RESTORED":
             player = self._online_player_named(str(session.get("player_name", "")))
             if player is None or not self._session_matches_player(session, player):
-                self._bridge.send_bridge("remove", {"n": fp.name})
+                self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
                 return
             try:
                 if inventory_digest(player.inventory) != str(session.get("player_digest")):
@@ -473,7 +540,7 @@ class FakeBotManager:
         player = self._online_player_named(str(session.get("player_name", "")))
         if player is None or not self._session_matches_player(session, player):
             # Keep no live copy on the bot while the borrower is offline.
-            self._bridge.send_bridge("remove", {"n": fp.name})
+            self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
             self._put_inventory_session(fp, session, "BORROWED")
             return
 
@@ -562,7 +629,7 @@ class FakeBotManager:
         if state == "BORROWED":
             # The bot must stay offline while its inventory is borrowed.
             if self._online_player_named(fp.name) is not None and self._bridge.active:
-                self._bridge.send_bridge("remove", {"n": fp.name})
+                self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
             player.send_message(
                 f"§e你仍在整理 {fp.name} 的主背包。盔甲和副手不会同步；"
                 "整理完成后，把希望假人拿着的物品拿在手上，再使用 /bot 重新打开假人菜单并点击“完成背包整理”。"
@@ -599,7 +666,7 @@ class FakeBotManager:
                 player.send_message("§c已恢复阶段的玩家背包与事务快照不匹配，已 fail-close。")
                 return
 
-            bot_player = self._online_player_named(fp.name)
+            bot_player = self._bot_player(fp)
             if bot_player is not None and hasattr(bot_player, "inventory"):
                 try:
                     if inventory_digest(bot_player.inventory) == str(session.get("edited_bot_digest")):
@@ -659,6 +726,7 @@ class FakeBotManager:
     def _pose_payload(fp: FakePlayer) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "n": fp.name,
+            "definition": fp.id,
             "x": fp.location_x,
             "y": fp.location_y,
             "z": fp.location_z,
@@ -706,6 +774,8 @@ class FakeBotManager:
         return None
 
     def create_for_player(self, sender: Any, name: str) -> tuple[bool, str]:
+        if getattr(self._plugin, "_stopping", False):
+            return False, "插件正在停止，请重新打开菜单。"
         if not self._bridge.active:
             return False, "行为包桥接未就绪，暂时不能创建假人。"
         location = getattr(sender, "location", None)
@@ -772,8 +842,10 @@ class FakeBotManager:
         self.spawn(fp, force=True)
         return True, f"已在 {dimension} ({x:.1f}, {y:.1f}, {z:.1f}) 创建假人 {fp.name}。"
 
-    def spawn(self, fp: FakePlayer, force: bool = False) -> bool:
-        if not fp.desired_online and not self.inventory_locked(fp):
+    def spawn(self, fp: FakePlayer, force: bool = False, authenticate: bool = False) -> bool:
+        if getattr(self._plugin, "_stopping", False) or not self.is_current(fp):
+            return False
+        if not authenticate and not fp.desired_online and not self.inventory_locked(fp):
             return False
         if not self._bridge.active:
             return False
@@ -782,7 +854,11 @@ class FakeBotManager:
         if not force and now - last < 10.0:
             return False
         self._last_spawn_request[fp.id] = now
-        return self._bridge.send_bridge("spawn", self._pose_payload(fp))
+        generation = secrets.token_hex(16)
+        self._pending_spawn[fp.id] = generation
+        payload = self._pose_payload(fp)
+        payload.update(definition=fp.id, generation=generation)
+        return self._bridge.send_bridge("spawn", payload)
 
     def ensure_all_spawned(self) -> None:
         if not self._bridge.active:
@@ -799,18 +875,9 @@ class FakeBotManager:
         remote = {name.lower(): name for name in names}
         for lower, fp in known.items():
             if lower in remote:
-                if not fp.desired_online and not self.inventory_locked(fp):
-                    if not self.persist_bot_inventory(fp):
-                        self._logger.error(
-                            f"拒绝下线 {fp.name}：背包持久化失败，保留当前活对象。"
-                        )
-                        continue
-                    self._bridge.send_bridge("remove", {"n": remote[lower]})
-                    fp.sim_spawn_confirmed = False
-                    fp.sim_has_position = False
-                    fp.sim_last_seen_at = 0.0
-                    continue
-                fp.sim_spawn_confirmed = True
+                # Discovery is not identity. Authenticate even offline survivors
+                # before deciding whether their inventory can be checkpointed.
+                self.spawn(fp, force=True, authenticate=True)
             elif not fp.is_recently_seen():
                 fp.sim_spawn_confirmed = False
         for lower, remote_name in remote.items():
@@ -821,12 +888,6 @@ class FakeBotManager:
     def mark_spawned(self, name: str, ok: bool) -> None:
         fp = self.get_by_name(name)
         if fp is None:
-            return
-        if ok and not fp.desired_online and not self.inventory_locked(fp):
-            fp.sim_spawn_confirmed = False
-            fp.sim_has_position = False
-            fp.sim_last_seen_at = 0.0
-            self._bridge.send_bridge("remove", {"n": fp.name})
             return
         fp.sim_spawn_confirmed = bool(ok)
         if ok and self.inventory_locked(fp):
@@ -839,7 +900,7 @@ class FakeBotManager:
         if not fp.desired_online and not self.inventory_locked(fp):
             if self._bridge.active:
                 if self.persist_bot_inventory(fp):
-                    self._bridge.send_bridge("remove", {"n": fp.name})
+                    self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
                 else:
                     self._logger.error(
                         f"拒绝下线 {fp.name}：背包持久化失败，保留当前活对象。"
@@ -849,7 +910,10 @@ class FakeBotManager:
             nx, ny, nz = float(x), float(y), float(z)
         except (TypeError, ValueError):
             return
+        if not all(math.isfinite(v) for v in (nx, ny, nz)):
+            return
         dimension = str(dimension or fp.dimension).replace("minecraft:", "")
+        fp.sim_actual_dimension = dimension
         fp.mark_seen(nx, ny, nz, dimension)
 
     def guard_positions(self) -> None:
@@ -864,7 +928,7 @@ class FakeBotManager:
             dx = fp.sim_actual_x - fp.location_x
             dy = fp.sim_actual_y - fp.location_y
             dz = fp.sim_actual_z - fp.location_z
-            if dx * dx + dy * dy + dz * dz > threshold_sq:
+            if fp.sim_actual_dimension != fp.dimension or dx * dx + dy * dy + dz * dz > threshold_sq:
                 self._bridge.send_bridge("teleport", self._pose_payload(fp))
 
     def move_here(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
@@ -885,6 +949,8 @@ class FakeBotManager:
     def throw_trident_here(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
         if not self.can_manage(sender, fp):
             return False, "你没有权限管理该假人。"
+        if self.bot_inventory_store.get(fp.id) is not None:
+            return False, "假人背包恢复尚未完成，暂时不能投掷。"
         if self.inventory_locked(fp):
             return False, "假人背包正在整理，不能执行三叉戟操作。"
         if not fp.desired_online:
@@ -902,6 +968,8 @@ class FakeBotManager:
         return True, f"已请求 {fp.name} 按已保存的位置和视角投掷背包中的三叉戟。"
 
     def teleport_to(self, fp: FakePlayer, x: float, y: float, z: float, dimension: str) -> tuple[bool, str]:
+        if getattr(self._plugin, "_stopping", False) or not self.is_current(fp):
+            return False, "假人定义已失效，请重新打开菜单。"
         if self.inventory_locked(fp):
             return False, "假人背包正在整理，不能移动。"
         if not self._bridge.active:
@@ -945,7 +1013,7 @@ class FakeBotManager:
                 return True, f"已请求 {fp.name} 上线。"
             return True, f"{fp.name} 已设置为上线，自动补生会继续重试。"
 
-        if self._bridge.send_bridge("remove", {"n": fp.name}):
+        if self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id}):
             return True, f"已请求 {fp.name} 下线。"
         return True, f"{fp.name} 已设置为下线；桥接恢复后会强制下线。"
 
@@ -954,7 +1022,7 @@ class FakeBotManager:
             return False, "你没有权限管理该假人。"
         if self.inventory_locked(fp):
             return False, "假人背包正在整理，不能删除。"
-        self._bridge.send_bridge("remove", {"n": fp.name})
+        self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
@@ -966,10 +1034,12 @@ class FakeBotManager:
         return True, f"已删除假人 {fp.name}。"
 
     def remove_by_admin(self, fp: FakePlayer) -> None:
+        if not self.is_current(fp):
+            return
         if self.inventory_locked(fp):
             self._logger.warning(f"拒绝删除背包事务中的假人: {fp.name}")
             return
-        self._bridge.send_bridge("remove", {"n": fp.name})
+        self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)

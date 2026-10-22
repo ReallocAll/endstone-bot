@@ -77,7 +77,7 @@ class BotGUI:
         player.send_form(form)
 
     def open_bot(self, player: Any, fp: FakePlayer, admin_context: bool) -> None:
-        current = self._plugin.manager.get_by_name(fp.name)
+        current = self._plugin.manager.bots.get(fp.id)
         if current is None:
             player.send_message("§c这个假人已经不存在。")
             return
@@ -96,6 +96,8 @@ class BotGUI:
             session = self._plugin.manager.inventory_session(fp)
             own_session = self._plugin.manager.inventory_session_for_player(player, fp)
             if session is None:
+                if self._plugin.manager.bot_inventory_store.get(fp.id) is not None:
+                    form.add_button("§e重试背包恢复\n请先由管理员安全处理新生成物品", on_click=lambda p: self._inventory_retry(p, fp))
                 if fp.desired_online:
                     form.add_button(
                         "§a整理背包\n§f仅主背包，不含盔甲和副手",
@@ -132,6 +134,10 @@ class BotGUI:
 
     def _inventory_start(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.begin_inventory_edit(player, fp)
+        player.send_message(("§a" if ok else "§c") + message)
+
+    def _inventory_retry(self, player: Any, fp: FakePlayer) -> None:
+        ok, message = self._plugin.manager.retry_inventory_restore(player, fp)
         player.send_message(("§a" if ok else "§c") + message)
 
     def _inventory_done(self, player: Any, fp: FakePlayer) -> None:
@@ -225,6 +231,8 @@ class BotGUI:
         player.send_form(form)
 
     def open_limit_name_input(self, player: Any) -> None:
+        if not self._plugin.is_admin(player):
+            return
         form = ModalForm(
             title="§l§6按名称管理限制",
             controls=[TextInput(label="玩家名", placeholder="输入玩家名")],
@@ -232,6 +240,9 @@ class BotGUI:
         )
 
         def submit(p: Any, result: str) -> None:
+            if not self._plugin.is_admin(p):
+                p.send_message("§c管理员权限已失效。")
+                return
             try:
                 data = json.loads(result)
                 name = str(data[0] or "").strip()
@@ -247,6 +258,8 @@ class BotGUI:
         player.send_form(form)
 
     def open_override_list(self, player: Any) -> None:
+        if not self._plugin.is_admin(player):
+            return
         form = ActionForm(title="§l§d已配置例外", content="仅显示非默认玩家限制。")
         for key, rec in self._plugin.settings.configured_overrides():
             name = str(rec.get("name", "") or key)
@@ -260,6 +273,8 @@ class BotGUI:
         player.send_form(form)
 
     def open_limit_menu(self, player: Any, key: str, name: str) -> None:
+        if not self._plugin.is_admin(player):
+            return
         limits = self._plugin.settings.effective_for_key(key)
         max_text = "不限" if limits.unlimited else str(limits.max_bots)
         form = ActionForm(
@@ -277,6 +292,8 @@ class BotGUI:
         player.send_form(form)
 
     def open_limit_edit(self, player: Any, key: str, name: str) -> None:
+        if not self._plugin.is_admin(player):
+            return
         rec = self._plugin.settings.override(key)
         effective = self._plugin.settings.effective_for_key(key)
         unlimited = rec.get("max_bots") == -1
@@ -296,6 +313,9 @@ class BotGUI:
         )
 
         def submit(p: Any, result: str) -> None:
+            if not self._plugin.is_admin(p):
+                p.send_message("§c管理员权限已失效。")
+                return
             try:
                 data = json.loads(result)
                 is_unlimited = bool(data[0])
@@ -320,16 +340,22 @@ class BotGUI:
         player.send_form(form)
 
     def _set_unlimited(self, player: Any, key: str, name: str) -> None:
+        if not self._plugin.is_admin(player):
+            return
         self._plugin.settings.set_unlimited(key, name)
         player.send_message(f"§a已解除 {name} 的全部假人限制。")
         self.open_limit_menu(player, key, name)
 
     def _reset_limits(self, player: Any, key: str, name: str) -> None:
+        if not self._plugin.is_admin(player):
+            return
         self._plugin.settings.reset_override(key, name)
         player.send_message(f"§a{name} 已恢复全局默认限制。")
         self.open_limit_menu(player, key, name)
 
     def open_global_settings(self, player: Any) -> None:
+        if not self._plugin.is_admin(player):
+            return
         form = ModalForm(
             title="§l§5全局假人设置",
             controls=[
@@ -343,6 +369,9 @@ class BotGUI:
         )
 
         def submit(p: Any, result: str) -> None:
+            if not self._plugin.is_admin(p):
+                p.send_message("§c管理员权限已失效。")
+                return
             try:
                 data = json.loads(result)
                 total = int(float(data[0]))

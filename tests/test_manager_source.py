@@ -80,12 +80,12 @@ class ManagerSourceTests(unittest.TestCase):
         self.assertLess(persist, shutdown)
         self.assertIn("if inventories_saved:", block)
 
-    def test_spawn_restore_retries_and_removes_empty_bot_on_failure(self):
+    def test_spawn_restore_retries_and_retains_conflicting_inventory(self):
         self.assertIn("def _schedule_bot_inventory_restore(", self.plugin_source)
-        self.assertIn("restore_persisted_bot_inventory_by_name(name)", self.plugin_source)
+        self.assertIn("restore_persisted_bot_inventory(fp)", self.plugin_source)
         self.assertIn("attempts > 1", self.plugin_source)
-        self.assertIn('send_bridge("remove", {"n": fp.name})', self.plugin_source)
-        self.assertIn("保留持久化快照等待下次恢复", self.plugin_source)
+        self.assertIn('send_bridge("remove", {"n": fp.name, "definition": fp.id})', self.plugin_source)
+        self.assertIn("live inventory and escrow retained", self.plugin_source)
 
     def test_persistent_inventory_store_is_atomic(self):
         self.assertIn("class PersistentInventoryStore:", self.journal_source)
@@ -96,7 +96,7 @@ class ManagerSourceTests(unittest.TestCase):
     def test_inventory_borrow_is_exclusive_and_journaled(self):
         self.assertIn("InventoryJournal", self.source)
         self.assertIn('self._put_inventory_session(fp, session, "BOT_CLEARED")', self.source)
-        self.assertIn('self._bridge.send_bridge("remove", {"n": fp.name})', self.source)
+        self.assertIn('self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})', self.source)
         self.assertIn('self._put_inventory_session(fp, session, "BORROWED")', self.source)
         self.assertIn('self._put_inventory_session(fp, session, "PLAYER_CLEARED")', self.source)
         self.assertIn('self._put_inventory_session(fp, session, "BOT_RESTORED")', self.source)
@@ -134,7 +134,7 @@ class ManagerSourceTests(unittest.TestCase):
     def test_manual_offline_is_persistent_and_blocks_autospawn(self):
         self.assertIn("not fp.desired_online", self.source)
         self.assertIn("def set_online(", self.source)
-        self.assertIn('self._bridge.send_bridge("remove", {"n": fp.name})', self.source)
+        self.assertIn('self._bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})', self.source)
         self.assertIn('return "手动下线"', self.source)
         self.assertIn('"/bot (online|offline)<action: BotOnlineAction> <name: str>"', self.plugin_source)
 

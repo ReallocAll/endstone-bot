@@ -6,14 +6,14 @@
  * - the first valid bot:hello establishes the per-process token
  * - every later command must carry the exact same token and protocol
  *
- * Protocol 2 intentionally keeps the bridge small: spawn/remove/teleport/trident/list/clear,
+ * Protocol 3 intentionally keeps the bridge small: spawn/remove/teleport/trident/list/clear,
  * heartbeat, lifecycle acknowledgements, loss notifications, and batched positions.
  */
 
 import * as GameTest from "@minecraft/server-gametest";
 import { GameMode, system, world } from "@minecraft/server";
 
-const PROTOCOL = 2;
+const PROTOCOL = 3;
 const MAX_MESSAGE_CHARS = 1400;
 const standaloneSimulatedPlayerSupported =
     typeof GameTest.spawnSimulatedPlayer === "function";
@@ -22,6 +22,36 @@ const survivalGameMode =
 let bridgeToken = "";
 
 const simulatedPlayers = new Map();
+const runtimeBindings = new Map();
+
+function sessionTimeout(callback, ticks) {
+    const token = bridgeToken;
+    return system.runTimeout(() => {
+        if (bridgeToken === token && token) callback();
+    }, ticks);
+}
+
+function bindRuntime(sim, req) {
+    if (!isRuntimeSimulatedPlayer(sim) || !/^[0-9a-f]{32}$/.test(req.generation) ||
+            !/^[0-9a-f]{32}$/.test(req.definition)) throw new Error("invalid runtime binding");
+    const tags = sim.getTags();
+    const definition = "endstone_bot_def:" + req.definition;
+    if (tags.some(t => t.startsWith("endstone_bot_def:") && t !== definition)) {
+        throw new Error("SimulatedPlayer belongs to another definition");
+    }
+    const oldRuntime = tags.find(t => /^endstone_bot_runtime:[0-9a-f]{32}$/.test(t));
+    const runtime = oldRuntime ? oldRuntime.slice("endstone_bot_runtime:".length) : req.generation;
+    for (const tag of tags) {
+        if (tag.startsWith("endstone_bot_request:")) sim.removeTag(tag);
+    }
+    for (const tag of [definition, "endstone_bot_runtime:" + runtime,
+            "endstone_bot_request:" + req.generation]) {
+        sim.addTag(tag);
+        if (!sim.hasTag(tag)) throw new Error("runtime identity tag unavailable");
+    }
+    runtimeBindings.set(req.n, {definition: req.definition, generation: req.generation, runtime});
+}
+
 const tridentBusy = new Set();
 const deadPlayers = new Set();
 const desiredPoses = new Map();
@@ -29,6 +59,25 @@ const MANAGED_TAG = "endstone_bot_managed";
 const DRAIN_MIN_TICKS = 5;
 const DRAIN_WARN_TICKS = 200;
 let drainState = null;
+let suspendPending = false;
+
+function suspendSession(attempt = 0) {
+    suspendPending = true;
+    // Let already-started item use finish its inventory cleanup before invalidating timers.
+    if (tridentBusy.size > 0) {
+        if (attempt >= 20) {
+            console.warn("[EndstoneBot] suspend blocked by unfinished item action; session retained");
+            return;
+        }
+        sessionTimeout(() => suspendSession(attempt + 1), 1);
+        return;
+    }
+    reply("bot:suspended", {});
+    bridgeToken = "";
+    drainState = null;
+    suspendPending = false;
+}
+
 
 function sourceKind(event) {
     try {
@@ -196,7 +245,7 @@ function pollDrain(elapsedTicks = 0) {
 
     if (remaining.length === 0) {
         if (drainState.total > 0 && elapsedTicks < DRAIN_MIN_TICKS) {
-            system.runTimeout(() => pollDrain(elapsedTicks + 1), 1);
+            sessionTimeout(() => pollDrain(elapsedTicks + 1), 1);
             return;
         }
 
@@ -211,17 +260,12 @@ function pollDrain(elapsedTicks = 0) {
         return;
     }
 
-    if (elapsedTicks >= DRAIN_WARN_TICKS && !drainState.warned) {
+    if (elapsedTicks >= DRAIN_WARN_TICKS) {
         drainState.warned = true;
-        console.warn(
-            `[EndstoneBot] SimulatedPlayer drain is still waiting for ${remaining.length} player(s); refusing new session until they leave`
-        );
+        console.warn(`[EndstoneBot] drain blocked with ${remaining.length} player(s); live ownership retained`);
+        return; // Bounded retries; keep the token and ownership, never detach live objects.
     }
-
-    system.runTimeout(
-        () => pollDrain(elapsedTicks + (elapsedTicks >= DRAIN_WARN_TICKS ? 20 : 1)),
-        elapsedTicks >= DRAIN_WARN_TICKS ? 20 : 1,
-    );
+    sessionTimeout(() => pollDrain(elapsedTicks + 1), 1);
 }
 
 function beginDrain(releaseToken) {
@@ -246,7 +290,7 @@ function beginDrain(releaseToken) {
         pollDrain(0);
         return;
     }
-    system.runTimeout(() => pollDrain(1), 1);
+    sessionTimeout(() => pollDrain(1), 1);
 }
 
 function rememberPose(req) {
@@ -283,7 +327,8 @@ function utf8Hex(text) {
 
 function reply(eventId, data) {
     if (!bridgeToken) return false;
-    const payload = { ...data, t: bridgeToken, p: PROTOCOL };
+    const binding = runtimeBindings.get(data.n) || {};
+    const payload = { ...binding, ...data, t: bridgeToken, p: PROTOCOL };
     const msg = JSON.stringify(payload);
     const encoded = utf8Hex(msg);
     const eventName = String(eventId || "").replace(/^bot:/, "");
@@ -392,7 +437,7 @@ function isDeadSim(name, sim) {
 }
 
 function finishRespawn(name, sim, pose) {
-    system.runTimeout(() => {
+    sessionTimeout(() => {
         try {
             teleportSim(sim, pose);
             deadPlayers.delete(name);
@@ -430,6 +475,7 @@ function respawnTracked(name, sim, pose) {
 function doSpawn(req) {
     const name = String(req.n || "");
     if (!name) return;
+    if (!/^[0-9a-f]{32}$/.test(req.definition) || !/^[0-9a-f]{32}$/.test(req.generation)) return;
     const pose = rememberPose(req);
     const existing = simulatedPlayers.get(name);
     if (existing) {
@@ -439,6 +485,10 @@ function doSpawn(req) {
         } catch (_) {}
 
         if (existingValid) {
+            try { bindRuntime(existing, req); } catch (e) {
+                reply("bot:error", {n: name, e: String(e)});
+                return;
+            }
             if (isDeadSim(name, existing)) {
                 respawnTracked(name, existing, pose);
                 return;
@@ -467,6 +517,10 @@ function doSpawn(req) {
 
     const existingWorldSim = findRuntimeSimulatedPlayer(name);
     if (existingWorldSim) {
+        try { bindRuntime(existingWorldSim, req); } catch (e) {
+            reply("bot:error", {n: name, e: String(e)});
+            return;
+        }
         if (!markManagedSimulatedPlayer(existingWorldSim)) {
             reply("bot:error", { n: name, e: "failed to mark existing SimulatedPlayer for reload adoption" });
             return;
@@ -512,6 +566,11 @@ function doSpawn(req) {
         return;
     }
 
+    try { bindRuntime(sim, req); } catch (e) {
+        try { sim.disconnect(); } catch (_) {}
+        reply("bot:error", {n: name, e: String(e)});
+        return;
+    }
     if (!markManagedSimulatedPlayer(sim)) {
         try { sim.disconnect(); } catch (_) {}
         reply("bot:error", { n: name, e: "failed to mark SimulatedPlayer for reload adoption" });
@@ -538,7 +597,9 @@ function doSpawn(req) {
 }
 
 function finishRemove(name, sim) {
-    system.runTimeout(() => {
+    const binding = runtimeBindings.get(name);
+    sessionTimeout(() => {
+        if (runtimeBindings.get(name) !== binding) return;
         try {
             if (sim.isValid) {
                 reply("bot:error", { n: name, e: "disconnect did not invalidate SimulatedPlayer" });
@@ -573,7 +634,7 @@ function doRemove(nameValue) {
 }
 
 function verifyViewSync(name, sim, pose) {
-    system.runTimeout(() => {
+    sessionTimeout(() => {
         try {
             const expected = {
                 x: Number(pose.dx ?? 0),
@@ -799,7 +860,7 @@ function doThrowTrident(req) {
         return;
     }
 
-    system.runTimeout(() => {
+    sessionTimeout(() => {
         try {
             if (playerWithinOneBlock(sim)) {
                 restoreHotbarAfterTrident(sim, found, slotState, false);
@@ -820,7 +881,7 @@ function doThrowTrident(req) {
             return;
         }
 
-        system.runTimeout(() => {
+        sessionTimeout(() => {
             let thrown = false;
             try {
                 sim.stopUsingItem();
@@ -833,7 +894,7 @@ function doThrowTrident(req) {
                 return;
             }
 
-            system.runTimeout(() => {
+            sessionTimeout(() => {
                 try {
                     const remaining = found.container.getItem(0);
                     thrown = thrown || !remaining || remaining.typeId !== "minecraft:trident";
@@ -883,15 +944,15 @@ function flushPositions(report) {
     let batch = [];
     for (const item of report) {
         const candidate = [...batch, item];
-        const probe = JSON.stringify({ p: candidate, t: bridgeToken, protocol: PROTOCOL });
+        const probe = JSON.stringify({ positions: candidate, t: bridgeToken, p: PROTOCOL });
         if (batch.length > 0 && probe.length > MAX_MESSAGE_CHARS) {
-            reply("bot:positions", { p: batch });
+            reply("bot:positions", { positions: batch });
             batch = [item];
         } else {
             batch = candidate;
         }
     }
-    if (batch.length > 0) reply("bot:positions", { p: batch });
+    if (batch.length > 0) reply("bot:positions", { positions: batch });
 }
 
 if (!standaloneSimulatedPlayerSupported) {
@@ -929,7 +990,12 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
     }
 
     if (!validCommand(event, data)) return;
+    if (suspendPending && event.id !== "bot:suspend") return;
 
+    if (["bot:remove", "bot:teleport", "bot:trident"].includes(event.id)) {
+        const binding = runtimeBindings.get(data.n);
+        if (!binding || binding.definition !== data.definition) return;
+    }
     switch (event.id) {
         case "bot:ping":
             reply("bot:pong", {});
@@ -951,6 +1017,10 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
             break;
         case "bot:clear":
             clearAll();
+            break;
+        case "bot:suspend":
+            // Authenticated relinquishment: preserve live inventory, invalidate old timers.
+            if (!suspendPending) suspendSession();
             break;
         case "bot:shutdown":
             beginShutdown();
@@ -1000,7 +1070,7 @@ try {
 
         const pose = desiredPoses.get(name);
         if (!pose) return;
-        system.runTimeout(() => {
+        sessionTimeout(() => {
             if (simulatedPlayers.get(name) !== sim || !deadPlayers.has(name)) return;
             respawnTracked(name, sim, pose);
         }, 1);
@@ -1057,6 +1127,7 @@ system.runInterval(() => {
             }
             const loc = sim.location;
             report.push({
+                ...runtimeBindings.get(name),
                 n: name,
                 x: Math.round(loc.x * 100) / 100,
                 y: Math.round(loc.y * 100) / 100,

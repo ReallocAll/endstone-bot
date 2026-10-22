@@ -7,7 +7,7 @@ from typing import Any
 
 from endstone.event import ScriptMessageEvent
 
-BRIDGE_PROTOCOL = 2
+BRIDGE_PROTOCOL = 3
 
 
 class BridgeManager:
@@ -69,6 +69,14 @@ class BridgeManager:
             return False
         return self._send_raw("bot:list", {})
 
+    def suspend(self) -> bool:
+        """释放认证会话但保留未保存的活对象，以便安全重新接管。"""
+        if self._remote_protocol != BRIDGE_PROTOCOL:
+            return False
+        ok = self._send_raw("bot:suspend", {})
+        self._ready = False
+        return ok
+
     def shutdown(self) -> bool:
         """Best-effort remote drain before /reload, even after heartbeat staleness."""
         if self._remote_protocol != BRIDGE_PROTOCOL:
@@ -99,7 +107,7 @@ class BridgeManager:
             return None
 
         try:
-            remote_protocol = int(data.get("p", BRIDGE_PROTOCOL))
+            remote_protocol = int(data.get("p", -1))
         except (TypeError, ValueError):
             remote_protocol = -1
 

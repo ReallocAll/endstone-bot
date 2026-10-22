@@ -56,6 +56,7 @@ class FakePlayer:
 
     sim_spawn_confirmed: bool = False
     sim_has_position: bool = False
+    sim_actual_dimension: str = ""
     sim_actual_x: float = 0.0
     sim_actual_y: float = 0.0
     sim_actual_z: float = 0.0

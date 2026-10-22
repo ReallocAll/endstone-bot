@@ -152,7 +152,7 @@ python plugins/bot/enable_beta.py
 
 Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并更新 `world_behavior_packs.json`。首次安装或 Pack 版本升级后仍需要完整重启一次。
 
-## Bridge protocol 2
+## Bridge protocol 3
 
 - Python → Behavior Pack 使用 `/scriptevent`；Behavior Pack → Python 使用内部 `/botbridge` 命令回调，payload 采用 UTF-8 hex（仅 `0-9a-f`），避免命令参数对 `%`、引号或空格的词法限制，并避免依赖 Script API 自发 `scriptevent` 是否再次进入 Endstone 的 `ScriptMessageEvent` hook。
 - `bot:hello` 建立随机 token；后续消息必须使用同一 token。
@@ -176,3 +176,29 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 ## 上游与许可证
 
 本 fork 基于 BCZZB/endstone-bot 与 mcbes-manage-script by YueHua46。见仓库 `LICENSE` 和 Required Notice。
+
+
+### 运行时身份与背包恢复（协议 3）
+
+Python 与行为包必须一起更新；行为包版本 4.3.3 需要完整重启后生效。
+`bot:spawn` 携带 `definition`（定义 ID）与 `generation`（本次随机请求 ID）；
+`bot:spawned` 回传这两个字段及 `runtime`（该活对象的持久来源标记）。
+Python 同时验证活对象上的定义、运行时和本次请求标签及 UUID，绝不把同名玩家当作假人。
+`bot:positions` 使用 `positions` 数组；`p` 始终只表示协议版本。
+位置、删除和丢失回包也绑定定义及运行时；旧请求与旧会话回包不会操作新对象。
+
+背包快照增加可选的 `runtime` 字段，旧快照仍可读取。
+同一已验证活对象的库存是权威副本；新生成对象只有空背包或内容与快照一致时才能恢复/消费快照。
+如果其他插件在生成时赠送时钟等物品，系统保留活库存与旧快照，拒绝整理、覆盖快照和下线。
+管理员应先安全保管这些新增物品，再清空该假人的主背包；所有者或管理员使用
+`/bot inventory <名称> retry`（或菜单中的“重试背包恢复”）重试。不要删除 `bot_inventories.json` 来解除阻塞。
+旧版本遗留的非空对象没有来源证明时也会保守阻止恢复，需要上述人工核对。
+
+禁用时如果库存无法保存，经过当前 token 认证的 `bot:suspend` 保留假人并释放会话，
+重新加载后通过新的生成请求接管。旧 token、延迟回调与未认证的 suspend 均无效。
+正常断开最多重试 200 ticks；失败时保留所有权并报告错误，不无限轮询或销毁仍存活的对象。
+如果 suspend 派发失败，仍保留旧会话；需管理员核对活库存后处理，不能假定自动接管成功。
+
+身份标签使用 Endstone 0.11 `Actor.scoreboard_tags` 和 Script API `Entity.getTags/addTag/removeTag`；
+标签少于 256 字符。仓库测试使用合成宿主验证 Python 决策及完整 JS 编码流程，
+不替代真实 BDS 中的 join 事件顺序、标签可见时序、死亡/重生和插件 reload 验证。

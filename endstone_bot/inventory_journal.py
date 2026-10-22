@@ -132,6 +132,7 @@ def empty_inventory(inventory: Any) -> None:
 
 
 def snapshot_digest(snapshot: dict[str, Any]) -> str:
+    snapshot = {k: v for k, v in snapshot.items() if k != "runtime"}
     raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 

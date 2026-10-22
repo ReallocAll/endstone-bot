@@ -1,3 +1,11 @@
+## Unreleased
+
+- Bind inventory access and asynchronous bridge messages to current definition and verified runtime identity.
+- Preserve escrow on fresh join-item conflicts; add explicit inventory recovery retry.
+- Separate protocol envelope from positions payload (protocol 3, bundled pack 4.3.3).
+- Recheck stale form identities and current administrator permission before mutation.
+- Add authenticated inventory-preserving suspend and bounded disconnect retries.
+
 # 更新日志
 
 本项目的所有显著变更都会记录在此文件中。

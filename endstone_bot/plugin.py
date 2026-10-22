@@ -35,7 +35,7 @@ class BotPlugin(Plugin):
                 "/bot (gui|list|status|admin|removeall)<action: BotSimpleAction>",
                 "/bot (spawn|remove|tp|trident)<action: BotNamedAction> <name: str>",
                 "/bot (online|offline)<action: BotOnlineAction> <name: str>",
-                "/bot (inventory)<action: BotInventoryAction> <name: str> (start|done)<mode: BotInventoryMode>",
+                "/bot (inventory)<action: BotInventoryAction> <name: str> (start|done|retry)<mode: BotInventoryMode>",
                 "/bot (createat)<action: BotCreateAtAction> <name: str> <owner: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotDimension>",
                 "/bot (moveat)<action: BotMoveAtAction> <name: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotMoveDimension>",
                 "/bot (limit)<action: BotLimitAction> <player: str> (show|unlimited|default)<mode: BotLimitSimpleMode>",
@@ -56,13 +56,14 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 3, 2]
+    BEHAVIOR_PACK_VERSION = [4, 3, 3]
 
     def on_load(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsManager(self.data_folder, self.logger)
 
     def on_enable(self) -> None:
+        self._stopping = False
         self.data_folder.mkdir(parents=True, exist_ok=True)
         if not hasattr(self, "settings"):
             self.settings = SettingsManager(self.data_folder, self.logger)
@@ -117,26 +118,39 @@ class BotPlugin(Plugin):
             self.logger.warning(f"生成 Beta APIs 离线补丁脚本失败: {exc}")
 
     def on_disable(self) -> None:
-        inventories_saved = True
-        if hasattr(self, "manager"):
-            inventories_saved = self.manager.persist_online_bot_inventories()
-            self.manager.save()
-        if hasattr(self, "bridge"):
-            if inventories_saved:
-                self.bridge.shutdown()
-            else:
-                self.logger.error(
-                    "存在假人背包未能持久化；本次禁用不主动 disconnect 假人，"
-                    "以便 /reload 后优先重新接管仍存活的对象。"
-                )
+        self._stopping = True
+        inventories_saved = False
+        try:
+            if hasattr(self, "manager"):
+                inventories_saved = self.manager.persist_online_bot_inventories()
+        except Exception as exc:
+            self.logger.error(f"Inventory checkpoint failed during disable: {exc}")
+        finally:
+            try:
+                if hasattr(self, "manager"):
+                    self.manager.save()
+            except Exception as exc:
+                self.logger.error(f"Definition save failed during disable: {exc}")
+            if hasattr(self, "bridge"):
+                if inventories_saved:
+                    dispatched = self.bridge.shutdown()
+                else:
+                    dispatched = self.bridge.suspend()
+                    self.logger.error("Inventory checkpoint incomplete; retaining live bots for authenticated recovery.")
+                if not dispatched:
+                    self.logger.error("Bridge relinquishment was not dispatched; retain live inventory and resolve the active session before reload recovery.")
 
     def _tick(self) -> None:
+        if self._stopping:
+            return
         self._tick_counter += 1
         interval = self.settings.guard_interval_ticks
         if self._tick_counter % interval == 0:
             self.manager.guard_positions()
 
     def _bridge_poll(self) -> None:
+        if self._stopping:
+            return
         self.bridge.mark_stale_if_needed()
         if self.bridge.active:
             self._bridge_warning_sent = False
@@ -184,6 +198,8 @@ class BotPlugin(Plugin):
             self._handle_bridge_message(parsed)
 
     def _handle_bridge_message(self, parsed: dict[str, Any]) -> None:
+        if getattr(self, "_stopping", False):
+            return
         msg_id = parsed["id"]
         data = parsed["data"]
 
@@ -197,9 +213,11 @@ class BotPlugin(Plugin):
         if msg_id == "bot:spawned":
             name = str(data.get("n", ""))
             ok = bool(data.get("ok", False))
-            self.manager.mark_spawned(name, ok)
-            if ok and (data.get("adopted") or (not data.get("existed") and not data.get("respawned"))):
-                self._schedule_bot_inventory_restore(name)
+            fp = self.manager.accept_spawn(data)
+            if fp is None:
+                return
+            if ok:
+                self._schedule_bot_inventory_restore(fp.id, data["generation"])
             if ok and data.get("adopted"):
                 self.logger.info(f"已重新接管假人 {name}。")
             elif ok and not data.get("existed") and not data.get("respawned"):
@@ -209,9 +227,13 @@ class BotPlugin(Plugin):
             self._handle_trident_result(data)
             return
         if msg_id == "bot:removed":
+            if not self.manager.matches_runtime(data):
+                return
             self.manager.on_bot_removed(str(data.get("n", "")))
             return
         if msg_id == "bot:lost":
+            if not self.manager.matches_runtime(data):
+                return
             fp = self.manager.get_by_name(str(data.get("n", "")))
             if fp is not None:
                 reason = str(data.get("reason", "") or "")
@@ -220,14 +242,14 @@ class BotPlugin(Plugin):
                 fp.sim_has_position = False
                 fp.sim_last_seen_at = 0.0
                 if not fp.desired_online and self.bridge.active and not self.manager.inventory_locked(fp):
-                    self.bridge.send_bridge("remove", {"n": fp.name})
+                    self.bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
             return
         if msg_id == "bot:positions":
-            entries = data.get("p", [])
+            entries = data.get("positions", [])
             if not isinstance(entries, list):
                 return
             for item in entries:
-                if not isinstance(item, dict):
+                if not isinstance(item, dict) or not self.manager.matches_runtime(item):
                     continue
                 self.manager.update_position(
                     str(item.get("n", "")),
@@ -250,30 +272,28 @@ class BotPlugin(Plugin):
                 f"行为包错误 [{data.get('n', '')}]: {data.get('e', 'unknown error')}"
             )
 
-    def _schedule_bot_inventory_restore(self, name: str, attempts: int = 4) -> None:
+    def _schedule_bot_inventory_restore(self, bot_id: str, generation: str, attempts: int = 4) -> None:
         def run() -> None:
-            result = self.manager.restore_persisted_bot_inventory_by_name(name)
+            if self._stopping:
+                return
+            fp = self.manager.bots.get(bot_id)
+            binding = self.manager._runtime.get(bot_id, {})
+            if fp is None or binding.get("generation") != generation:
+                return
+            result = self.manager.restore_persisted_bot_inventory(fp)
             if result is True:
+                if not fp.desired_online and not self.manager.inventory_locked(fp):
+                    if self.manager.persist_bot_inventory(fp):
+                        self.bridge.send_bridge("remove", {"n": fp.name, "definition": fp.id})
                 return
             if result is None and attempts > 1:
-                self.server.scheduler.run_task(
-                    self,
-                    lambda: self._schedule_bot_inventory_restore(name, attempts - 1),
-                    delay=2,
-                )
+                self._schedule_bot_inventory_restore(bot_id, generation, attempts - 1)
                 return
-            fp = self.manager.get_by_name(name)
-            if fp is not None:
-                fp.sim_spawn_confirmed = False
-                fp.sim_has_position = False
-                fp.sim_last_seen_at = 0.0
-                if self.bridge.active:
-                    self.bridge.send_bridge("remove", {"n": fp.name})
+            # Keep conflicting live items AND escrow. Neither is safe to discard.
             self.logger.error(
-                f"假人 {name} 背包恢复失败；已请求下线该空对象，保留持久化快照等待下次恢复。"
+                f"Bot inventory restore blocked [{fp.name}]; live inventory and escrow retained for recovery."
             )
-
-        self.server.scheduler.run_task(self, run, delay=1)
+        self.server.scheduler.run_task(self, run, delay=2)
 
     def _handle_trident_result(self, data: dict[str, Any]) -> None:
         name = str(data.get("n", "") or "假人")
@@ -396,6 +416,8 @@ class BotPlugin(Plugin):
             mode = str(args[2]).lower()
             if mode == "start":
                 ok, message = self.manager.begin_inventory_edit(sender, fp)
+            elif mode == "retry":
+                ok, message = self.manager.retry_inventory_restore(sender, fp)
             elif mode == "done":
                 ok, message = self.manager.finish_inventory_edit(sender, fp)
             else:
@@ -581,6 +603,8 @@ class BotPlugin(Plugin):
         return True
 
     def is_admin(self, sender: Any) -> bool:
+        if getattr(self, "_stopping", False):
+            return False
         try:
             value = getattr(sender, "is_op", None)
             if value is not None:
