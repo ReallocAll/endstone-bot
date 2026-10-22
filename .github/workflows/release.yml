@@ -88,7 +88,8 @@ jobs:
     name: Create GitHub Release
     needs: wheel
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || (github.repository == 'ReallocAll/endstone-bot' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.head_commit.message == 'release: bot 4.7.0 verified protocol 3')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') || (github.repository == 'ReallocAll/endstone-bot' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.head_commit.message == 'release: bot 4.7.0 verified protocol 3')
     permissions:
       contents: write
     steps:
