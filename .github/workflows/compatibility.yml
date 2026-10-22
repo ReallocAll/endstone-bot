@@ -1,0 +1,51 @@
+name: Published wheel compatibility
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/compatibility.yml']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release version X.Y.Z
+        type: string
+        default: '4.7.0'
+        required: true
+permissions:
+  contents: read
+jobs:
+  released-wheel:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version || '4.7.0' }}
+    steps:
+      - name: Validate version
+        run: '[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ inputs.version || '4.7.0' }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.15'
+      - name: Download and verify published wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir dist --pattern '*.whl' --pattern SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
+          python -m pip install --no-deps dist/*.whl
+      - name: Installed wheel metadata and matching pack
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md, json, os
+          dist = md.distribution('endstone-bot')
+          assert dist.version == os.environ['VERSION']
+          manifest = json.loads(dist.locate_file('endstone_bot/behavior_pack/manifest.json').read_text())
+          assert manifest['header']['version'] == [4, 3, 3]
+          assert 'const PROTOCOL = 3' in dist.locate_file('endstone_bot/behavior_pack/scripts/main.js').read_text()
+          print('Installed', dist.version, 'pack', manifest['header']['version'])
+          PY
+      - name: Test exact released source and wheel
+        run: |
+          python -m unittest discover -s tests -v
+          node tests/bridge_runtime.cjs

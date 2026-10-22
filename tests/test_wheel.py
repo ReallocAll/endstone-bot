@@ -8,7 +8,8 @@ import unittest
 
 class WheelTests(unittest.TestCase):
     def test_release_entry_point_and_payload(self):
-        wheels = list(Path("dist").glob("endstone_bot-4.7.0-*.whl"))
+        version = re.search(r'(?m)^version = "([^"]+)"', Path("pyproject.toml").read_text())[1]
+        wheels = list(Path("dist").glob(f"endstone_bot-{version}-*.whl"))
         self.assertEqual(len(wheels), 1)
         with zipfile.ZipFile(wheels[0]) as zf:
             names = set(zf.namelist())
@@ -35,7 +36,7 @@ class WheelTests(unittest.TestCase):
                 self.assertEqual(zf.read(member), Path(member).read_bytes(), member)
             self.assertIn(b"BRIDGE_PROTOCOL = 3", zf.read("endstone_bot/bridge.py"))
             self.assertIn(b"const PROTOCOL = 3", zf.read("endstone_bot/behavior_pack/scripts/main.js"))
-            self.assertIn(b'__version__ = "4.7.0"', zf.read("endstone_bot/__init__.py"))
+            self.assertIn(f'__version__ = "{version}"'.encode(), zf.read("endstone_bot/__init__.py"))
             ep_name = next(x for x in names if x.endswith(".dist-info/entry_points.txt"))
             cfg = configparser.ConfigParser()
             cfg.read_string(zf.read(ep_name).decode())

@@ -212,3 +212,14 @@ Python 同时验证活对象上的定义、运行时和本次请求标签及 UUI
 5. 完整启动 BDS，确认 `/bot status` 显示 protocol 3 桥接在线。先验证一个有物品的假人上下线与库存，再恢复正常使用。如果出现恢复阻塞，保留快照并按上节处理赠送物品。
 
 也可让新插件首次启动时自动部署行为包及注册版本，但此时运行中的仍可能是旧脚本；必须再正常停服并完整启动一次。仅替换 wheel 后 `/reload` 不能完成协议升级。
+
+### Maintainer release workflow
+
+The permanent workflow follows EndKeep's release convention. Update `pyproject.toml`,
+`endstone_bot/__init__.py` and the versioned changelog, then push a main commit with
+exact subject `chore: release vX.Y.Z`. A matching `vX.Y.Z` tag or manual workflow
+also works; manual runs default to dry-run and require the already-committed version
+on main. Ordinary pushes/PRs only validate and build. All Python matrix tests,
+bridge tests and wheel checks must pass before tag creation/publication. Existing
+releases cannot be overwritten, and existing tags cannot be moved. Release assets
+and SHA256SUMS come from that exact run. No additional credential is required.

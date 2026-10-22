@@ -7,6 +7,19 @@ on:
       - 'v*'
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Package version X.Y.Z already committed on main
+        required: true
+        type: string
+      dry_run:
+        description: Validate and build without publishing
+        type: boolean
+        default: true
+
+concurrency:
+  group: bot-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -17,13 +30,27 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 jobs:
+  prepare:
+    name: Validate release intent
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - id: meta
+        run: python tools/release_metadata.py
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
     steps:
       - uses: actions/checkout@v7
 
@@ -33,7 +60,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Run unit tests
-        run: python -m unittest tests.test_settings tests.test_models tests.test_bridge tests.test_behavior_pack tests.test_manager_source tests.test_boundaries tests.test_level_dat tests.test_beta_script -v
+        run: python -m unittest tests.test_settings tests.test_models tests.test_bridge tests.test_behavior_pack tests.test_manager_source tests.test_boundaries tests.test_level_dat tests.test_beta_script tests.test_release -v
 
       - name: Compile Python sources
         run: python -m compileall -q endstone_bot
@@ -86,10 +113,9 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: wheel
+    needs: [prepare, wheel]
     runs-on: ubuntu-latest
-    if: >-
-      startsWith(github.ref, 'refs/tags/v') || (github.repository == 'ReallocAll/endstone-bot' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.head_commit.message == 'release: bot 4.7.0 verified protocol 3')
+    if: needs.prepare.outputs.publish == 'true' && github.repository == 'ReallocAll/endstone-bot'
     permissions:
       contents: write
     steps:
@@ -100,41 +126,53 @@ jobs:
           merge-multiple: true
           skip-decompress: true
 
-      - name: Verify release wheel and record checksum
-        shell: bash
+      - name: Verify tested wheel and record checksum
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           test "$(find artifacts -name '*.whl' | wc -l)" -eq 1
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            test -f artifacts/endstone_bot-4.7.0-py3-none-any.whl
-          fi
+          test -f "artifacts/endstone_bot-$VERSION-py3-none-any.whl"
           cd artifacts
           sha256sum *.whl > SHA256SUMS
 
-      - name: Refuse an existing one-time release tag
-        if: github.ref == 'refs/heads/main'
+      - name: Create immutable tag after all validation
         uses: actions/github-script@v8
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         with:
           script: |
+            const tag = `v${process.env.VERSION}`;
             try {
-              await github.rest.git.getRef({...context.repo, ref: 'tags/v4.7.0'});
+              await github.rest.repos.getReleaseByTag({...context.repo, tag});
+              throw new Error(`Release ${tag} already exists; refusing to overwrite`);
             } catch (error) {
-              if (error.status === 404) return;
-              throw error;
+              if (error.status !== 404) throw error;
             }
-            throw new Error('v4.7.0 already exists; refusing to change it');
+            let existing;
+            try {
+              existing = await github.rest.git.getRef({...context.repo, ref: `tags/${tag}`});
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (existing) {
+              let object = existing.data.object;
+              while (object.type === 'tag') {
+                object = (await github.rest.git.getTag({...context.repo, tag_sha: object.sha})).data.object;
+              }
+              if (object.type !== 'commit' || object.sha !== context.sha) {
+                throw new Error(`Refusing to move existing tag ${tag}`);
+              }
+            } else {
+              await github.rest.git.createRef({...context.repo, ref: `refs/tags/${tag}`, sha: context.sha});
+            }
 
-      - name: Create Release and attach wheel
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.7.0' }}
-          target_commitish: ${{ github.sha }}
-          files: |
-            artifacts/*.whl
-            artifacts/SHA256SUMS
-          body: |
-            Protocol 3 boundary refactor. Includes behavior pack 4.3.3.
-            Upgrade the wheel and matching bundled behavior pack together while BDS is stopped, then fully restart. Python-only hot reload is incompatible with the older running pack.
-            See README runtime identity and recovery section. Fresh join-item conflicts preserve both live items and escrow; reconcile gifts before /bot inventory <name> retry.
-            Tests and wheel verification passed for the exact source commit linked by this release. Real BDS reload/join ordering remains an integration validation step.
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+      - name: Publish versioned release without overwriting
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release create "v$VERSION" --repo "$REPO" --verify-tag \
+            --title "v$VERSION" --generate-notes \
+            --notes 'Install the wheel and its matching bundled behavior pack together while BDS is stopped, then fully restart. See README for inventory conflict recovery and migration.' \
+            artifacts/*.whl artifacts/SHA256SUMS
