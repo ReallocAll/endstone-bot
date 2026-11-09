@@ -128,8 +128,8 @@ class BotGUI:
                 )
             if session is not None and self._plugin.is_admin(player):
                 form.add_button(
-                    "§c管理员强制解锁\n§f保留快照，不自动恢复物品",
-                    on_click=lambda p: self._confirm_inventory_unlock(p, fp),
+                    "§c管理员强制归还\n§f归还假人背包并恢复玩家原背包",
+                    on_click=lambda p: self._confirm_forced_return(p, fp),
                 )
         form.add_button(
             "返回",
@@ -149,23 +149,23 @@ class BotGUI:
         ok, message = self._plugin.manager.finish_inventory_edit(player, fp)
         player.send_message(("§a" if ok else "§c") + message)
 
-    def _confirm_inventory_unlock(self, player: Any, fp: FakePlayer) -> None:
+    def _confirm_forced_return(self, player: Any, fp: FakePlayer) -> None:
         if not self._plugin.is_admin(player):
-            player.send_message("§c只有管理员可以强制解锁。")
+            player.send_message("§c只有管理员可以强制归还。")
             return
         session = self._plugin.manager.inventory_session(fp)
         if session is None:
             player.send_message("§e该事务已经结束。")
             return
         form = MessageForm(
-            title=f"§l§c强制解锁 {fp.name}",
+            title=f"§l§c强制归还 {fp.name}",
             content=(
                 f"当前状态：{session.get('state')}\n"
                 f"整理玩家：{session.get('player_name')}\n"
-                "将保存完整事务快照，然后解除锁定。\n"
-                "§c不会自动恢复或清理任何物品；未归还物品必须由管理员人工核对。"
+                "将备份当前双方背包，再强制归还假人背包、恢复玩家原背包。\n"
+                "§c可能覆盖当前背包中的物品；请确认玩家已停止整理，必要时通过归档核对差异。"
             ),
-            button1="§c确认强制解锁",
+            button1="§c确认强制归还",
             button2="取消",
         )
 
