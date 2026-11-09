@@ -172,7 +172,7 @@ class BotGUI:
         def submit(p: Any, button: int) -> None:
             if button != 0:
                 return
-            ok, message = self._plugin.manager.admin_unlock_inventory(p, fp)
+            ok, message = self._plugin.manager.admin_force_return_inventory(p, fp)
             p.send_message(("§a" if ok else "§c") + message)
 
         form.on_submit = submit
