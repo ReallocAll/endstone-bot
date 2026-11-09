@@ -1,3 +1,11 @@
+## 4.7.2 (2026-11-09)
+
+- Fix real BDS forced return failing after restoration: dropper data 3->0 and piston data 1->0 are native canonicalization of directional block-state metadata, not missing item stacks.
+- Compare item identity, count and NBT; tolerate only the observed block-data normalization and ignore the borrower's later hotbar-selection changes.
+- If both inventories already match journal snapshots, archive live inventories and unlock without writing items again.
+- Prevent automatic retries of a previously attempted restoration from overwriting items the borrower acquired afterward.
+- Add regression cases based on the captured production inventory mismatch and interrupted recovery.
+
 ## 4.7.1 (2026-11-09)
 
 - Add OP-only confirmed force-return of stuck inventory transactions in GUI and console.
