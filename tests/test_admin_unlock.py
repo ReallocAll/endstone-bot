@@ -330,23 +330,58 @@ class AdminForceReturnTests(unittest.TestCase):
         self.borrower.inventory.corrupt_on_restore = True
         ok, message = self.m._complete_forced_inventory_return(self.fp, self.bot, session)
         self.assertFalse(ok)
-        self.assertIn("自动重试已停止", message)
+        self.assertIn("拒绝重复写入", message)
         self.assertEqual(self.borrower.inventory.contents, self.current_player)
         self.assertEqual(self.bot.inventory.contents, self.current_bot)
         self.assertEqual(self.journal.get_for_bot(self.fp.id), session)
         self.assertFalse((self.journal_path.parent / "inventory_recovery").exists())
 
-    def test_manual_retry_after_archive_still_requires_admin_and_archives_again(self):
+    def test_repeated_admin_confirmation_will_not_overwrite_new_player_items(self):
         session = dict(self.session)
         session["admin_force_return"] = True
         session["admin_force_archive"] = "previous-failed-attempt.json"
         self.journal.put(self.fp.id, session)
-        ok, msg = self.m.admin_force_return_inventory(self.admin, self.fp)
-        self.assertTrue(ok, msg)
+        ok, message = self.m.admin_force_return_inventory(self.admin, self.fp)
+        self.assertFalse(ok)
+        self.assertIn("拒绝重复写入", message)
+        self.assertEqual(self.borrower.inventory.contents, self.current_player)
+        self.assertEqual(self.bot.inventory.contents, self.current_bot)
+        self.assertIsNotNone(self.journal.get_for_bot(self.fp.id))
+        self.assertFalse((self.journal_path.parent / "inventory_recovery").exists())
+
+    def test_recovered_borrower_with_empty_respawned_bot_restores_only_bot(self):
+        self.borrower.inventory.contents = copy.deepcopy(self.original)
+        self.borrower.inventory.held_item_slot = 5
+        self.borrower.inventory.corrupt_on_restore = True
+        self.bot.inventory.clear()
+        session = dict(self.session)
+        session["admin_force_return"] = True
+        session["admin_force_archive"] = "prior-attempt.json"
+        self.journal.put(self.fp.id, session)
+        ok, message = self.m._complete_forced_inventory_return(self.fp, self.bot, session)
+        self.assertTrue(ok, message)
+        self.assertIn("主背包未修改", message)
         self.assertEqual(self.borrower.inventory.contents, self.original)
+        self.assertEqual(self.borrower.inventory.held_item_slot, 5)
         self.assertEqual(self.bot.inventory.contents, self.edited)
-        self.archive()
         self.assertIsNone(self.journal.get_for_bot(self.fp.id))
+        saved = self.archive()
+        self.assertEqual(saved["live_bot"]["slots"], [None, None])
+        self.assertEqual(saved["live_player"]["slots"], self.original)
+
+    def test_nonempty_conflicting_respawned_bot_is_never_replaced_after_failed_return(self):
+        self.borrower.inventory.contents = copy.deepcopy(self.original)
+        self.bot.inventory.contents = [item("new-player-item"), None]
+        session = dict(self.session)
+        session["admin_force_return"] = True
+        session["admin_force_archive"] = "prior-attempt.json"
+        self.journal.put(self.fp.id, session)
+        ok, message = self.m._complete_forced_inventory_return(self.fp, self.bot, session)
+        self.assertFalse(ok)
+        self.assertIn("拒绝重复写入", message)
+        self.assertEqual(self.borrower.inventory.contents, self.original)
+        self.assertEqual(self.bot.inventory.contents, [item("new-player-item"), None])
+        self.assertEqual(self.journal.get_for_bot(self.fp.id), session)
 
     def test_unsupported_state_and_stale_definition_are_rejected(self):
         session = dict(self.session)
