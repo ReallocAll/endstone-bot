@@ -381,6 +381,8 @@ class FakeBotManager:
             try:
                 self._put_inventory_session(fp, session, "WAIT_SPAWN_FOR_RETURN")
                 if not self.spawn(fp, force=True):
+                    session.pop("admin_force_return", None)
+                    session.pop("admin_force_operator", None)
                     self._put_inventory_session(fp, session, "BORROWED")
                     return False, "生成接收背包的假人失败；事务仍锁定，玩家背包未修改。"
             except Exception as exc:
