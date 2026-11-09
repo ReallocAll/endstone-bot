@@ -295,11 +295,15 @@ class InventoryJournal:
             )
             fp.flush()
             os.fsync(fp.fileno())
-        dir_fd = os.open(str(archive_dir), os.O_RDONLY)
+        # Match the journal's cross-platform directory fsync behavior.
         try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+            dir_fd = os.open(str(archive_dir), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
 
         # Retain the live lock if the durable journal update fails.
         self.remove(bot_id)
