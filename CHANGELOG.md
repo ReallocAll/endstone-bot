@@ -1,9 +1,9 @@
 ## 4.7.1 (2026-11-09)
 
-- Add OP-only confirmed unlock for stuck inventory transaction sessions in GUI and console.
-- Archive original player, bot and edited inventory snapshots before removing the persistent lock; retain the lock on archival or journal-write failures.
-- Log the operator and transaction identity, leaving live inventories unchanged for manual reconciliation.
-- Add cross-version regression tests for access control and recovery durability.
+- Add OP-only confirmed force-return of stuck inventory transactions in GUI and console.
+- Return the edited main inventory to the fake player and restore the borrower's original main inventory from the journal, including stuck BOT_RESTORED sessions.
+- Archive the complete transaction and both current live inventories before overwriting any slots; retain the lock if recovery is incomplete.
+- Add cross-version regression tests for BORROWED, interrupted return, native NBT digest differences and write failures.
 
 ## 4.7.0 (2026-10-22)
 
