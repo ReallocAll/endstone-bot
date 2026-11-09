@@ -64,6 +64,7 @@ class AdminUnlockTests(unittest.TestCase):
         self.m = FakeBotManager.__new__(FakeBotManager)
         self.m.inventory_journal = self.journal
         self.m.bots = {self.fp.id: self.fp}
+        self.m.name_index = {self.fp.name.lower(): self.fp.id}
         self.m._plugin = NS(_stopping=False, is_admin=lambda sender: sender.name == "Admin")
         self.m._logger = self.logger
         self.admin = NS(name="Admin")
