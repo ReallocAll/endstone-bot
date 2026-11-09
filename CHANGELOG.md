@@ -1,3 +1,10 @@
+## 4.7.3 (2026-11-10)
+
+- Finish journal recovery after a BDS restart without overwriting a previously restored player's main inventory: when the player inventory matches the escrow snapshot and the respawned bot is empty, restore only the bot's edited inventory.
+- Reject repeated administrator confirmation too when a previous force-return archived attempt exists and either nonempty live inventory no longer matches; require manual reconciliation rather than overwriting newer items.
+- Preserve an additional pre-write archive and the original lock when the bot-only restoration cannot be verified.
+- Test restart recovery, new-item conflicts, and repeat OP submissions using the existing synthetic inventory boundaries.
+
 ## 4.7.2 (2026-11-09)
 
 - Fix real BDS forced return failing after restoration: dropper data 3->0 and piston data 1->0 are native canonicalization of directional block-state metadata, not missing item stacks.
