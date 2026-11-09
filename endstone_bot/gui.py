@@ -128,7 +128,7 @@ class BotGUI:
                 )
             if session is not None and self._plugin.is_admin(player):
                 form.add_button(
-                    "§c管理员强制解锁\\n§f保留快照，不自动恢复物品",
+                    "§c管理员强制解锁\n§f保留快照，不自动恢复物品",
                     on_click=lambda p: self._confirm_inventory_unlock(p, fp),
                 )
         form.add_button(
@@ -160,9 +160,9 @@ class BotGUI:
         form = MessageForm(
             title=f"§l§c强制解锁 {fp.name}",
             content=(
-                f"当前状态：{session.get('state')}\\n"
-                f"整理玩家：{session.get('player_name')}\\n"
-                "将保存完整事务快照，然后解除锁定。\\n"
+                f"当前状态：{session.get('state')}\n"
+                f"整理玩家：{session.get('player_name')}\n"
+                "将保存完整事务快照，然后解除锁定。\n"
                 "§c不会自动恢复或清理任何物品；未归还物品必须由管理员人工核对。"
             ),
             button1="§c确认强制解锁",
