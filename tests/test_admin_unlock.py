@@ -272,6 +272,82 @@ class AdminForceReturnTests(unittest.TestCase):
         self.assertEqual(self.bot.inventory.contents, self.edited)
         self.archive()
 
+    def test_real_bds_normalized_dropper_piston_metadata_unlocks_without_rewriting(self):
+        # 2026-11-09 Farshs54: first force attempt actually restored all
+        # 34 occupied slots. Native BDS canonicalized dropper 3->0 and
+        # piston 1->0, while a player could change the selected hotbar slot.
+        backup = [item("minecraft:dropper", 17), item("minecraft:piston", 4)]
+        backup[0]["data"] = 3
+        backup[1]["data"] = 1
+        normalized = copy.deepcopy(backup)
+        normalized[0]["data"] = 0
+        normalized[1]["data"] = 0
+        self.borrower.inventory.contents = copy.deepcopy(normalized)
+        self.borrower.inventory.held_item_slot = 5
+        self.bot.inventory.contents = copy.deepcopy(self.edited)
+        self.borrower.inventory.corrupt_on_restore = True  # detect any accidental rewrite
+        self.bot.inventory.corrupt_on_restore = True
+        session = dict(self.session)
+        session["player_backup"] = snapshot(Inventory(backup))
+        session["player_backup"]["held_item_slot"] = 8
+        session["player_digest"] = digest(session["player_backup"])
+        session["admin_force_archive"] = "previous-attempt.json"
+        session["admin_force_return"] = True
+        self.journal.put(self.fp.id, session)
+
+        ok, msg = self.m.admin_force_return_inventory(self.admin, self.fp)
+        self.assertTrue(ok, msg)
+        self.assertIn("未重复覆盖物品", msg)
+        self.assertIsNone(self.journal.get_for_bot(self.fp.id))
+        self.assertEqual(self.borrower.inventory.contents, normalized)
+        self.assertEqual(self.borrower.inventory.held_item_slot, 5)
+        self.assertEqual(self.bot.inventory.contents, self.edited)
+        saved = self.archive()
+        self.assertEqual(saved["live_player"]["slots"], normalized)
+        self.assertEqual(saved["session"]["player_backup"]["slots"], backup)
+
+    def test_unrelated_item_data_cannot_be_ignored(self):
+        saved = [item("minecraft:potion", 1), None]
+        saved[0]["data"] = 3
+        live = copy.deepcopy(saved)
+        live[0]["data"] = 0
+        self.assertFalse(
+            self.m._inventory_primary_matches(Inventory(live), snapshot(Inventory(saved)))
+        )
+        # NBT remains a material part of the comparison for every item.
+        saved[0]["type"] = "minecraft:dropper"
+        live[0]["type"] = "minecraft:dropper"
+        live[0]["nbt"] = {"kind": "unexpected"}
+        self.assertFalse(
+            self.m._inventory_primary_matches(Inventory(live), snapshot(Inventory(saved)))
+        )
+
+    def test_automatic_retry_after_failed_force_does_not_overwrite_new_player_items(self):
+        session = dict(self.session)
+        session["admin_force_return"] = True
+        session["admin_force_archive"] = "previous-failed-attempt.json"
+        self.journal.put(self.fp.id, session)
+        self.borrower.inventory.corrupt_on_restore = True
+        ok, message = self.m._complete_forced_inventory_return(self.fp, self.bot, session)
+        self.assertFalse(ok)
+        self.assertIn("自动重试已停止", message)
+        self.assertEqual(self.borrower.inventory.contents, self.current_player)
+        self.assertEqual(self.bot.inventory.contents, self.current_bot)
+        self.assertEqual(self.journal.get_for_bot(self.fp.id), session)
+        self.assertFalse((self.journal_path.parent / "inventory_recovery").exists())
+
+    def test_manual_retry_after_archive_still_requires_admin_and_archives_again(self):
+        session = dict(self.session)
+        session["admin_force_return"] = True
+        session["admin_force_archive"] = "previous-failed-attempt.json"
+        self.journal.put(self.fp.id, session)
+        ok, msg = self.m.admin_force_return_inventory(self.admin, self.fp)
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.borrower.inventory.contents, self.original)
+        self.assertEqual(self.bot.inventory.contents, self.edited)
+        self.archive()
+        self.assertIsNone(self.journal.get_for_bot(self.fp.id))
+
     def test_unsupported_state_and_stale_definition_are_rejected(self):
         session = dict(self.session)
         session["state"] = "PREPARED"
