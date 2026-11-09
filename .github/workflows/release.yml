@@ -60,7 +60,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Run unit tests
-        run: python -m unittest tests.test_settings tests.test_models tests.test_bridge tests.test_behavior_pack tests.test_manager_source tests.test_boundaries tests.test_level_dat tests.test_beta_script tests.test_release -v
+        run: python -m unittest tests.test_settings tests.test_models tests.test_bridge tests.test_behavior_pack tests.test_manager_source tests.test_boundaries tests.test_admin_unlock tests.test_level_dat tests.test_beta_script tests.test_release -v
 
       - name: Compile Python sources
         run: python -m compileall -q endstone_bot

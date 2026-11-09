@@ -79,6 +79,7 @@
 /bot moveat <name> <x> <y> <z> <overworld|nether|the_end>
 /bot remove <name>
 /bot removeall
+/bot forcereturn <name> confirm
 
 /bot limit <player> show
 /bot limit <player> unlimited
@@ -93,6 +94,12 @@
 /bot config maxperplayer <count>
 /bot config cooldown <seconds>
 ```
+
+**背包事务强制归还（管理员）**：在 `/bot admin` → 全服假人 → 对应假人中，选择“管理员强制归还”并确认；控制台和 OP 可输入 `/bot forcereturn Farshs2 confirm`。当前整理玩家必须在线，假人必须能通过运行时身份验证。只有存在未完成事务时才显示 GUI 入口。
+
+管理员确认后，插件**将整理后的物品归还假人，并用事务中保存的原始玩家背包快照覆盖玩家的主背包**。如果事务处于 `BORROWED`，先生成假人接收玩家当前整理结果，再恢复玩家原背包；如果卡在 `BOT_RESTORED`，直接重新执行双方恢复。插件核对主背包槽位、物品类型、数量和 NBT；已证实的投掷器与活塞方块状态辅助数据归零不视为物品丢失，玩家后来切换的快捷栏选中槽也不参与物品核对。若双方物品已经与快照匹配，则只归档并解锁，不再重复写回；若玩家原背包已经恢复、重启后的假人背包为空，则仅补回假人背包后解锁，不再修改玩家物品。此前强制归还失败且非空背包出现新变化时，无论重连自动恢复还是管理员重复确认，均拒绝覆盖后来获得的物品。
+
+**操作会覆盖双方主背包当前内容。** 在任何覆盖发生之前，插件先将完整事务和玩家、假人的实时背包一并归档到 `plugins/bot/inventory_recovery/`。即使操作失败也保留原事务锁，便于重试或人工核对。归档不代表可以直接补发一份物品，避免在活背包已恢复时造成复制。盔甲、副手不参与整理和恢复；非 `BORROWED` 或已进入归还阶段的其他异常事务状态不允许盲目强制操作。
 
 给生电玩家解除全部限制：
 
@@ -166,6 +173,8 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 
 - `bots.json`：持久化假人定义、挂机锚点、pitch/yaw 和世界空间视线方向。
 - `bot_inventories.json`：假人普通上下线/正常关服时使用的一次性主背包 escrow；恢复成功后立即消费删除。只保存主背包/快捷栏与当前手持槽，不保存盔甲和副手。
+- `inventory_journal.json`：整理背包的持久化事务及活动锁；不要手工直接删除。
+- `inventory_recovery/`：管理员强制归还前保存的原始事务和操作前双方实时背包，用于失败后的人工核对。
 - `config.json`：全局资源限制与位置守护设置。
 - `enable_beta.py`：插件自动生成的显式离线 Beta APIs 补丁脚本。
 - `level_dat_backups/<world>/`：手动执行补丁脚本时创建的校验备份。

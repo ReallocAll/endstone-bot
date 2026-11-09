@@ -1,3 +1,25 @@
+## 4.7.3 (2026-11-10)
+
+- Finish journal recovery after a BDS restart without overwriting a previously restored player's main inventory: when the player inventory matches the escrow snapshot and the respawned bot is empty, restore only the bot's edited inventory.
+- Reject repeated administrator confirmation too when a previous force-return archived attempt exists and either nonempty live inventory no longer matches; require manual reconciliation rather than overwriting newer items.
+- Preserve an additional pre-write archive and the original lock when the bot-only restoration cannot be verified.
+- Test restart recovery, new-item conflicts, and repeat OP submissions using the existing synthetic inventory boundaries.
+
+## 4.7.2 (2026-11-09)
+
+- Fix real BDS forced return failing after restoration: dropper data 3->0 and piston data 1->0 are native canonicalization of directional block-state metadata, not missing item stacks.
+- Compare item identity, count and NBT; tolerate only the observed block-data normalization and ignore the borrower's later hotbar-selection changes.
+- If both inventories already match journal snapshots, archive live inventories and unlock without writing items again.
+- Prevent automatic retries of a previously attempted restoration from overwriting items the borrower acquired afterward.
+- Add regression cases based on the captured production inventory mismatch and interrupted recovery.
+
+## 4.7.1 (2026-11-09)
+
+- Add OP-only confirmed force-return of stuck inventory transactions in GUI and console.
+- Return the edited main inventory to the fake player and restore the borrower's original main inventory from the journal, including stuck BOT_RESTORED sessions.
+- Archive the complete transaction and both current live inventories before overwriting any slots; retain the lock if recovery is incomplete.
+- Add cross-version regression tests for BORROWED, interrupted return, native NBT digest differences and write failures.
+
 ## 4.7.0 (2026-10-22)
 
 - Bind inventory access and asynchronous bridge messages to current definition and verified runtime identity.

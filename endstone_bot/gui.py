@@ -126,6 +126,11 @@ class BotGUI:
                     "§a完成背包整理\n§f归还主背包并恢复你的原背包",
                     on_click=lambda p: self._inventory_done(p, fp),
                 )
+            if session is not None and self._plugin.is_admin(player):
+                form.add_button(
+                    "§c管理员强制归还\n§f归还假人背包并恢复玩家原背包",
+                    on_click=lambda p: self._confirm_forced_return(p, fp),
+                )
         form.add_button(
             "返回",
             on_click=(lambda p: self.open_admin_bots(p)) if admin_context else (lambda p: self.open_my_bots(p)),
@@ -143,6 +148,35 @@ class BotGUI:
     def _inventory_done(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.finish_inventory_edit(player, fp)
         player.send_message(("§a" if ok else "§c") + message)
+
+    def _confirm_forced_return(self, player: Any, fp: FakePlayer) -> None:
+        if not self._plugin.is_admin(player):
+            player.send_message("§c只有管理员可以强制归还。")
+            return
+        session = self._plugin.manager.inventory_session(fp)
+        if session is None:
+            player.send_message("§e该事务已经结束。")
+            return
+        form = MessageForm(
+            title=f"§l§c强制归还 {fp.name}",
+            content=(
+                f"当前状态：{session.get('state')}\n"
+                f"整理玩家：{session.get('player_name')}\n"
+                "将备份当前双方背包，再强制归还假人背包、恢复玩家原背包。\n"
+                "§c可能覆盖当前背包中的物品；请确认玩家已停止整理，必要时通过归档核对差异。"
+            ),
+            button1="§c确认强制归还",
+            button2="取消",
+        )
+
+        def submit(p: Any, button: int) -> None:
+            if button != 0:
+                return
+            ok, message = self._plugin.manager.admin_force_return_inventory(p, fp)
+            p.send_message(("§a" if ok else "§c") + message)
+
+        form.on_submit = submit
+        player.send_form(form)
 
     def _move_here(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.move_here(player, fp)
