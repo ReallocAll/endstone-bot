@@ -308,19 +308,29 @@ class FakeBotManager:
             # boundary but failed exact digest verification. If both live
             # inventories already match, just archive and clear the lock.
             # Do not overwrite the borrower's current inventory again.
-            already_returned = (
-                state in {"BOT_RESTORED", "PLAYER_RESTORED"} and
-                self._inventory_primary_matches(player.inventory, player_backup) and
-                self._inventory_primary_matches(bot_player.inventory, edited_bot)
+            recoverable_state = state in {"BOT_RESTORED", "PLAYER_RESTORED"}
+            player_matches = self._inventory_primary_matches(
+                player.inventory, player_backup
             )
-            # An automatic retry after a failed force return must not destroy
-            # items the player may have acquired after that attempt.
-            if (not explicit and not already_returned and
-                    session.get("admin_force_archive") and
-                    state in {"BOT_RESTORED", "PLAYER_RESTORED"}):
+            bot_matches = self._inventory_primary_matches(
+                bot_player.inventory, edited_bot
+            )
+            already_returned = recoverable_state and player_matches and bot_matches
+            # A respawned simulated player may have an empty inventory even
+            # though the journal already records BOT_RESTORED. When the human
+            # player's original bag is verified, only the missing bot bag
+            # needs to be restored; never rewrite the human bag again.
+            restore_empty_bot_only = (
+                recoverable_state and player_matches and bot_player.inventory.is_empty
+            )
+            # After an attempted return, neither automatic recovery nor a
+            # repeated OP confirmation may overwrite a divergent nonempty bag.
+            if (session.get("admin_force_archive") and recoverable_state and
+                    not already_returned and not restore_empty_bot_only):
                 return False, (
-                    "此前强制归还已尝试过，但实时背包与快照不匹配；"
-                    "自动重试已停止，请管理员重新核对并确认。"
+                    "此前已经尝试过强制归还，当前背包与快照不匹配；"
+                    "为避免覆盖玩家后来获得的物品，已拒绝重复写入。"
+                    "请先通过恢复归档人工核对。"
                 )
             # Archive both live inventories before modifying either one.
             archive = self.inventory_journal.archive_session(
@@ -339,6 +349,24 @@ class FakeBotManager:
                 return True, (
                     f"{fp.name} 与玩家 {session.get('player_name')} 的主背包"
                     f"已经匹配恢复快照；仅解除事务锁，未重复覆盖物品。归档: {archive}"
+                )
+            if restore_empty_bot_only:
+                restore_inventory(bot_player.inventory, edited_bot)
+                if not self._inventory_primary_matches(bot_player.inventory, edited_bot):
+                    raise RuntimeError("empty bot recovery slot restoration failed")
+                self._put_inventory_session(fp, session, "PLAYER_RESTORED")
+                self.inventory_journal.remove(fp.id)
+                self._logger.warning(
+                    f"管理员 {operator} 恢复已清空的假人 {fp.name} 背包并解除事务锁；"
+                    f"玩家 {session.get('player_name')} 的已恢复背包保持原样；归档: {archive}"
+                )
+                self._notify_session_player(
+                    session, f"{fp.name} 已从事务快照恢复假人背包，"
+                    "你的主背包未被再次覆盖，事务锁已解除。"
+                )
+                return True, (
+                    f"已从快照恢复 {fp.name} 的空主背包并解除锁；"
+                    f"玩家 {session.get('player_name')} 的主背包未修改。归档: {archive}"
                 )
             if state == "WAIT_SPAWN_FOR_RETURN":
                 session["edited_bot"] = edited_bot
