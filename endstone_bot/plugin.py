@@ -36,6 +36,7 @@ class BotPlugin(Plugin):
                 "/bot (spawn|remove|tp|trident)<action: BotNamedAction> <name: str>",
                 "/bot (online|offline)<action: BotOnlineAction> <name: str>",
                 "/bot (inventory)<action: BotInventoryAction> <name: str> (start|done|retry)<mode: BotInventoryMode>",
+                "/bot (unlock)<action: BotUnlockAction> <name: str> (confirm)<mode: BotUnlockConfirm>",
                 "/bot (createat)<action: BotCreateAtAction> <name: str> <owner: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotDimension>",
                 "/bot (moveat)<action: BotMoveAtAction> <name: str> <x: float> <y: float> <z: float> (overworld|nether|the_end)<dimension: BotMoveDimension>",
                 "/bot (limit)<action: BotLimitAction> <player: str> (show|unlimited|default)<mode: BotLimitSimpleMode>",
@@ -424,6 +425,19 @@ class BotPlugin(Plugin):
                 return True
             self._send_result(sender, ok, message)
             return True
+        if action == "unlock":
+            if not self._require_admin(sender):
+                return True
+            if len(args) != 3 or str(args[2]).lower() != "confirm":
+                self._send_error(sender, "请明确使用 /bot unlock <假人名> confirm。")
+                return True
+            fp = self.manager.get_by_name(str(args[1]))
+            if fp is None:
+                self._send_error(sender, "假人不存在。")
+                return True
+            ok, message = self.manager.admin_unlock_inventory(sender, fp)
+            self._send_result(sender, ok, message)
+            return True
         if action == "createat":
             return self._cmd_create_at(sender, args)
         if action == "moveat":
@@ -441,7 +455,7 @@ class BotPlugin(Plugin):
             self.gui.open_main(sender)
         else:
             sender.send_message(
-                "控制台管理：/bot status | list | online | offline | createat | moveat | remove | removeall | limit | config"
+                "控制台管理：/bot status | list | online | offline | createat | moveat | remove | removeall | unlock | limit | config"
             )
         return True
 
