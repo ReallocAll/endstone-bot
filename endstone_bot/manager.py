@@ -249,6 +249,32 @@ class FakeBotManager:
             return True
         return self.restore_persisted_bot_inventory(fp)
 
+    def admin_unlock_inventory(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
+        if not self._plugin.is_admin(sender):
+            return False, "只有管理员可以强制解除背包事务锁。"
+        if getattr(self._plugin, "_stopping", False) or not self.is_current(fp):
+            return False, "假人定义已失效，请重新打开菜单。"
+        session = self.inventory_session(fp)
+        if session is None:
+            return False, "该假人没有需要解除的背包事务锁。"
+
+        operator = str(getattr(sender, "name", "") or "控制台")
+        try:
+            archive = self.inventory_journal.archive_and_remove(fp.id, operator)
+        except Exception as exc:
+            self._logger.error(f"管理员解除背包事务锁失败 [{fp.name}/{operator}]: {exc}")
+            return False, "事务归档或持久化失败，锁仍然保留；请查看服务器日志。"
+
+        self._logger.warning(
+            f"管理员 {operator} 强制解除 {fp.name} 的背包事务锁 "
+            f"(state={session.get('state')}, borrower={session.get('player_name')}); "
+            f"原事务归档: {archive}"
+        )
+        return True, (
+            f"已解除 {fp.name} 的背包事务锁，原事务已归档到 {archive}。"
+            "玩家与假人的现有物品均未修改；请管理员核对并手动处理未恢复物品。"
+        )
+
     def inventory_locked(self, fp: FakePlayer) -> bool:
         return self.inventory_session(fp) is not None
 
