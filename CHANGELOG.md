@@ -1,3 +1,10 @@
+## 4.7.1 (2026-11-09)
+
+- Add OP-only confirmed unlock for stuck inventory transaction sessions in GUI and console.
+- Archive original player, bot and edited inventory snapshots before removing the persistent lock; retain the lock on archival or journal-write failures.
+- Log the operator and transaction identity, leaving live inventories unchanged for manual reconciliation.
+- Add cross-version regression tests for access control and recovery durability.
+
 ## 4.7.0 (2026-10-22)
 
 - Bind inventory access and asynchronous bridge messages to current definition and verified runtime identity.
