@@ -85,7 +85,7 @@ InventoryJournal = load_class(
 FakeBotManager = load_class(
     "manager.py", "FakeBotManager",
     {
-        "snapshot_inventory": snapshot, "snapshot_digest": digest,
+        "time": time, "snapshot_inventory": snapshot, "snapshot_digest": digest,
         "inventory_digest": inventory_digest, "restore_inventory": restore,
         "empty_inventory": lambda inv: inv.clear(),
     },
@@ -240,7 +240,7 @@ class AdminForceReturnTests(unittest.TestCase):
         self.assertEqual(self.journal.get_for_bot(self.fp.id), self.session)
 
     def test_archive_failure_never_modifies_live_items(self):
-        with mock.patch.object(Path, "open", side_effect=OSError("disk full")):
+        with mock.patch.object(self.journal, "archive_session", side_effect=OSError("disk full")):
             ok, message = self.m.admin_force_return_inventory(self.admin, self.fp)
         self.assertFalse(ok)
         self.assertIn("锁保留", message)
