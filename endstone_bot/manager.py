@@ -280,7 +280,6 @@ class FakeBotManager:
 
     def _complete_forced_inventory_return(
         self, fp: FakePlayer, bot_player: Any, session: dict[str, Any],
-        *, explicit: bool = False,
     ) -> tuple[bool, str]:
         state = str(session.get("state", ""))
         player = self._online_player_named(str(session.get("player_name", "")))
@@ -465,9 +464,7 @@ class FakeBotManager:
 
         bot_player = self._bot_player(fp)
         if bot_player is not None:
-            return self._complete_forced_inventory_return(
-                fp, bot_player, session, explicit=True
-            )
+            return self._complete_forced_inventory_return(fp, bot_player, session)
         if state == "WAIT_SPAWN_FOR_RETURN" and self._pending_spawn.get(fp.id):
             return True, "假人正在生成，生成后将强制归还并恢复玩家原背包。"
         if self.spawn(fp, force=True):
