@@ -345,7 +345,7 @@ class FakeBotManager:
             self._logger.error(f"强制归还背包失败 [{fp.name}]，事务保持锁定: {exc}")
             return False, "强制归还失败，事务锁保留；原事务及已创建的归档可用于恢复，请查看服务器日志。"
 
-    def admin_unlock_inventory(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
+    def admin_force_return_inventory(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
         """OP-only force return, preserving the original journal until completion."""
         if not self._plugin.is_admin(sender):
             return False, "只有管理员可以执行强制归还。"
