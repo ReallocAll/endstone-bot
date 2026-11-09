@@ -251,27 +251,36 @@ class FakeBotManager:
 
     @staticmethod
     def _inventory_primary_matches(inventory: Any, expected: dict[str, Any]) -> bool:
-        """Verify real slot identities/counts while tolerating native NBT normalization."""
+        """Compare restored items; hotbar selection is not part of the item escrow."""
         actual = snapshot_inventory(inventory)
         if int(actual["size"]) != int(expected.get("size", -1)):
-            return False
-        if "held_item_slot" in expected and actual.get("held_item_slot") != expected["held_item_slot"]:
             return False
         slots = expected.get("slots")
         if not isinstance(slots, list) or len(slots) != len(actual["slots"]):
             return False
+        # Real BDS normalized legacy aux data on dropper(3->0) and
+        # piston(1->0) when restoring Farshs54's 2026-11-09 inventory.
+        # These are directional block states, not distinct inventory items.
+        # Do not relax data comparison for items with meaningful variants.
+        normalized_block_data = {"minecraft:dropper", "minecraft:piston"}
         for got, want in zip(actual["slots"], slots):
             if got is None or want is None:
                 if got is not None or want is not None:
                     return False
             elif not isinstance(got, dict) or not isinstance(want, dict):
                 return False
-            elif any(got.get(key) != want.get(key) for key in ("type", "amount", "data")):
-                return False
+            else:
+                if any(got.get(key) != want.get(key) for key in ("type", "amount", "nbt")):
+                    return False
+                if got.get("data") != want.get("data"):
+                    if not (want.get("type") in normalized_block_data and
+                            got.get("data") == 0):
+                        return False
         return True
 
     def _complete_forced_inventory_return(
-        self, fp: FakePlayer, bot_player: Any, session: dict[str, Any]
+        self, fp: FakePlayer, bot_player: Any, session: dict[str, Any],
+        *, explicit: bool = False,
     ) -> tuple[bool, str]:
         state = str(session.get("state", ""))
         player = self._online_player_named(str(session.get("player_name", "")))
@@ -295,12 +304,42 @@ class FakeBotManager:
                 return False, "实时背包与事务快照的槽位数量不一致，无法归还。"
 
             operator = str(session.get("admin_force_operator", "管理员"))
-            # Archive both live inventories before modifying either one. The
-            # escrow record stays locked until both writes are complete.
+            # An earlier restore can have succeeded at the native inventory
+            # boundary but failed exact digest verification. If both live
+            # inventories already match, just archive and clear the lock.
+            # Do not overwrite the borrower's current inventory again.
+            already_returned = (
+                state in {"BOT_RESTORED", "PLAYER_RESTORED"} and
+                self._inventory_primary_matches(player.inventory, player_backup) and
+                self._inventory_primary_matches(bot_player.inventory, edited_bot)
+            )
+            # An automatic retry after a failed force return must not destroy
+            # items the player may have acquired after that attempt.
+            if (not explicit and not already_returned and
+                    session.get("admin_force_archive") and
+                    state in {"BOT_RESTORED", "PLAYER_RESTORED"}):
+                return False, (
+                    "此前强制归还已尝试过，但实时背包与快照不匹配；"
+                    "自动重试已停止，请管理员重新核对并确认。"
+                )
+            # Archive both live inventories before modifying either one.
             archive = self.inventory_journal.archive_session(
                 fp.id, operator, live_player=live_player, live_bot=live_bot
             )
             session["admin_force_archive"] = str(archive)
+            # Persist the archive pointer before any live inventory mutation.
+            self.inventory_journal.put(fp.id, session)
+            if already_returned:
+                self.inventory_journal.remove(fp.id)
+                self._logger.warning(
+                    f"管理员 {operator} 核对确认 {fp.name} 与 "
+                    f"{session.get('player_name')} 的背包已恢复；仅解除锁定，"
+                    f"未重新写入物品；归档: {archive}"
+                )
+                return True, (
+                    f"{fp.name} 与玩家 {session.get('player_name')} 的主背包"
+                    f"已经匹配恢复快照；仅解除事务锁，未重复覆盖物品。归档: {archive}"
+                )
             if state == "WAIT_SPAWN_FOR_RETURN":
                 session["edited_bot"] = edited_bot
                 session["edited_bot_digest"] = snapshot_digest(edited_bot)
@@ -398,7 +437,9 @@ class FakeBotManager:
 
         bot_player = self._bot_player(fp)
         if bot_player is not None:
-            return self._complete_forced_inventory_return(fp, bot_player, session)
+            return self._complete_forced_inventory_return(
+                fp, bot_player, session, explicit=True
+            )
         if state == "WAIT_SPAWN_FOR_RETURN" and self._pending_spawn.get(fp.id):
             return True, "假人正在生成，生成后将强制归还并恢复玩家原背包。"
         if self.spawn(fp, force=True):
