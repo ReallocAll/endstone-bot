@@ -152,6 +152,28 @@ class FakeBotManager:
         self.mark_spawned(fp.name, True)
         return fp
 
+    def reject_spawn(self, data: dict[str, Any]) -> bool:
+        """释放失败请求的名额；旧请求的回包不能取消新请求。"""
+        fp = self.bots.get(str(data.get("definition", "")))
+        if (data.get("op") != "spawn" or fp is None or data.get("n") != fp.name or
+                self._pending_spawn.get(fp.id) != data.get("generation") or
+                not isinstance(data.get("generation"), str)):
+            return False
+        self._pending_spawn.pop(fp.id, None)
+        fp.sim_spawn_confirmed = False
+        fp.sim_has_position = False
+        fp.sim_last_seen_at = 0.0
+        session = self.inventory_session(fp)
+        if session is not None and session.get("state") == "WAIT_SPAWN_FOR_RETURN":
+            session.pop("admin_force_return", None)
+            session.pop("admin_force_operator", None)
+            self._put_inventory_session(fp, session, "BORROWED")
+            self._notify_session_player(
+                session, "接收背包的假人未能上线；你的背包未被修改，请腾出在线名额后重试归还。",
+                error=True,
+            )
+        return True
+
     def _player_identity(self, sender: Any) -> tuple[str, str, str]:
         name = str(getattr(sender, "name", "") or "")
         uuid = str(getattr(sender, "unique_id", "") or "")
@@ -248,6 +270,228 @@ class FakeBotManager:
         if fp is None:
             return True
         return self.restore_persisted_bot_inventory(fp)
+
+    @staticmethod
+    def _inventory_primary_matches(inventory: Any, expected: dict[str, Any]) -> bool:
+        """Compare restored items; hotbar selection is not part of the item escrow."""
+        actual = snapshot_inventory(inventory)
+        if int(actual["size"]) != int(expected.get("size", -1)):
+            return False
+        slots = expected.get("slots")
+        if not isinstance(slots, list) or len(slots) != len(actual["slots"]):
+            return False
+        # Real BDS normalized legacy aux data on dropper(3->0) and
+        # piston(1->0) when restoring Farshs54's 2026-11-09 inventory.
+        # These are directional block states, not distinct inventory items.
+        # Do not relax data comparison for items with meaningful variants.
+        normalized_block_data = {"minecraft:dropper", "minecraft:piston"}
+        for got, want in zip(actual["slots"], slots):
+            if got is None or want is None:
+                if got is not None or want is not None:
+                    return False
+            elif not isinstance(got, dict) or not isinstance(want, dict):
+                return False
+            else:
+                if any(got.get(key) != want.get(key) for key in ("type", "amount", "nbt")):
+                    return False
+                if got.get("data") != want.get("data"):
+                    if not (want.get("type") in normalized_block_data and
+                            got.get("data") == 0):
+                        return False
+        return True
+
+    def _complete_forced_inventory_return(
+        self, fp: FakePlayer, bot_player: Any, session: dict[str, Any],
+    ) -> tuple[bool, str]:
+        state = str(session.get("state", ""))
+        player = self._online_player_named(str(session.get("player_name", "")))
+        if player is None or not self._session_matches_player(session, player):
+            return False, "整理玩家不在线或身份不匹配；无法强制恢复原背包。"
+        if not hasattr(player, "inventory") or not hasattr(bot_player, "inventory"):
+            return False, "无法读取玩家或假人的主背包。"
+
+        try:
+            live_player = snapshot_inventory(player.inventory)
+            live_bot = snapshot_inventory(bot_player.inventory)
+            player_backup = session["player_backup"]
+            if state == "WAIT_SPAWN_FOR_RETURN":
+                edited_bot = live_player
+            else:
+                edited_bot = session["edited_bot"]
+            if not isinstance(player_backup, dict) or not isinstance(edited_bot, dict):
+                return False, "事务快照不完整，无法强制归还。"
+            expected_size = int(player_backup["size"])
+            if any(int(item["size"]) != expected_size for item in (edited_bot, live_player, live_bot)):
+                return False, "实时背包与事务快照的槽位数量不一致，无法归还。"
+
+            operator = str(session.get("admin_force_operator", "管理员"))
+            # An earlier restore can have succeeded at the native inventory
+            # boundary but failed exact digest verification. If both live
+            # inventories already match, just archive and clear the lock.
+            # Do not overwrite the borrower's current inventory again.
+            recoverable_state = state in {"BOT_RESTORED", "PLAYER_RESTORED"}
+            player_matches = self._inventory_primary_matches(
+                player.inventory, player_backup
+            )
+            bot_matches = self._inventory_primary_matches(
+                bot_player.inventory, edited_bot
+            )
+            already_returned = recoverable_state and player_matches and bot_matches
+            # A respawned simulated player may have an empty inventory even
+            # though the journal already records BOT_RESTORED. When the human
+            # player's original bag is verified, only the missing bot bag
+            # needs to be restored; never rewrite the human bag again.
+            restore_empty_bot_only = (
+                recoverable_state and player_matches and bot_player.inventory.is_empty
+            )
+            # After an attempted return, neither automatic recovery nor a
+            # repeated OP confirmation may overwrite a divergent nonempty bag.
+            if (session.get("admin_force_archive") and recoverable_state and
+                    not already_returned and not restore_empty_bot_only):
+                return False, (
+                    "此前已经尝试过强制归还，当前背包与快照不匹配；"
+                    "为避免覆盖玩家后来获得的物品，已拒绝重复写入。"
+                    "请先通过恢复归档人工核对。"
+                )
+            # Archive both live inventories before modifying either one.
+            archive = self.inventory_journal.archive_session(
+                fp.id, operator, live_player=live_player, live_bot=live_bot
+            )
+            session["admin_force_archive"] = str(archive)
+            # Persist the archive pointer before any live inventory mutation.
+            self.inventory_journal.put(fp.id, session)
+            if already_returned:
+                self.inventory_journal.remove(fp.id)
+                self._logger.warning(
+                    f"管理员 {operator} 核对确认 {fp.name} 与 "
+                    f"{session.get('player_name')} 的背包已恢复；仅解除锁定，"
+                    f"未重新写入物品；归档: {archive}"
+                )
+                return True, (
+                    f"{fp.name} 与玩家 {session.get('player_name')} 的主背包"
+                    f"已经匹配恢复快照；仅解除事务锁，未重复覆盖物品。归档: {archive}"
+                )
+            if restore_empty_bot_only:
+                restore_inventory(bot_player.inventory, edited_bot)
+                if not self._inventory_primary_matches(bot_player.inventory, edited_bot):
+                    raise RuntimeError("empty bot recovery slot restoration failed")
+                self._put_inventory_session(fp, session, "PLAYER_RESTORED")
+                self.inventory_journal.remove(fp.id)
+                self._logger.warning(
+                    f"管理员 {operator} 恢复已清空的假人 {fp.name} 背包并解除事务锁；"
+                    f"玩家 {session.get('player_name')} 的已恢复背包保持原样；归档: {archive}"
+                )
+                self._notify_session_player(
+                    session, f"{fp.name} 已从事务快照恢复假人背包，"
+                    "你的主背包未被再次覆盖，事务锁已解除。"
+                )
+                return True, (
+                    f"已从快照恢复 {fp.name} 的空主背包并解除锁；"
+                    f"玩家 {session.get('player_name')} 的主背包未修改。归档: {archive}"
+                )
+            if state == "WAIT_SPAWN_FOR_RETURN":
+                session["edited_bot"] = edited_bot
+                session["edited_bot_digest"] = snapshot_digest(edited_bot)
+                self._put_inventory_session(fp, session, "RETURNING_PREPARED")
+
+            # Clearing the borrowed inventory first prevents a second live copy
+            # when the same items are written to the bot.
+            if state in {"WAIT_SPAWN_FOR_RETURN", "RETURNING_PREPARED", "PLAYER_CLEARED"}:
+                empty_inventory(player.inventory)
+                if not player.inventory.is_empty:
+                    raise RuntimeError("failed to clear borrowed inventory")
+                self._put_inventory_session(fp, session, "PLAYER_CLEARED")
+
+            restore_inventory(bot_player.inventory, edited_bot)
+            if not self._inventory_primary_matches(bot_player.inventory, edited_bot):
+                raise RuntimeError("bot inventory slot restoration failed")
+            self._put_inventory_session(fp, session, "BOT_RESTORED")
+
+            restore_inventory(player.inventory, player_backup)
+            if not self._inventory_primary_matches(player.inventory, player_backup):
+                raise RuntimeError("player inventory slot restoration failed")
+            self._put_inventory_session(fp, session, "PLAYER_RESTORED")
+
+            if (inventory_digest(bot_player.inventory) != snapshot_digest(edited_bot) or
+                    inventory_digest(player.inventory) != snapshot_digest(player_backup)):
+                self._logger.warning(
+                    f"强制归还存在 NBT/digest 差异 [{fp.name}]；保留归档供核对: {archive}"
+                )
+            self.inventory_journal.remove(fp.id)
+            self._logger.warning(
+                f"管理员 {operator} 强制归还 {fp.name} 的背包并恢复 "
+                f"{session.get('player_name')} 的原背包；事务归档: {archive}"
+            )
+            self._notify_session_player(
+                session, f"{fp.name} 的主背包已强制归还，你原来的主背包已恢复。"
+            )
+            return True, (
+                f"已强制归还 {fp.name} 的背包并恢复玩家 {session.get('player_name')} 的原背包。"
+                f"事务及操作前实时背包已归档到 {archive}。"
+            )
+        except Exception as exc:
+            self._logger.error(f"强制归还背包失败 [{fp.name}]，事务保持锁定: {exc}")
+            return False, "强制归还失败，事务锁保留；原事务及已创建的归档可用于恢复，请查看服务器日志。"
+
+    def admin_force_return_inventory(self, sender: Any, fp: FakePlayer) -> tuple[bool, str]:
+        """OP-only force return, preserving the original journal until completion."""
+        if not self._plugin.is_admin(sender):
+            return False, "只有管理员可以执行强制归还。"
+        if getattr(self._plugin, "_stopping", False) or not self.is_current(fp):
+            return False, "假人定义已失效，请重新打开菜单。"
+        session = self.inventory_session(fp)
+        if session is None:
+            return False, "该假人没有需要归还的背包事务。"
+        state = str(session.get("state", ""))
+        supported = {
+            "BORROWED", "WAIT_SPAWN_FOR_RETURN", "RETURNING_PREPARED",
+            "PLAYER_CLEARED", "BOT_RESTORED", "PLAYER_RESTORED",
+        }
+        if state not in supported:
+            return False, f"当前事务状态 {state} 不支持强制归还，锁仍保留。"
+
+        player = self._online_player_named(str(session.get("player_name", "")))
+        if player is None or not self._session_matches_player(session, player):
+            return False, "整理玩家必须在线，才能恢复其原背包。"
+        if not hasattr(player, "inventory"):
+            return False, "无法访问整理玩家的主背包。"
+        if not self.inventory_journal.available:
+            return False, "背包事务日志不可写，无法安全归还。"
+        if not self._bridge.active:
+            return False, "行为包桥接未就绪，无法确认假人背包。"
+
+        session["admin_force_operator"] = str(getattr(sender, "name", "") or "控制台")
+        session["admin_force_return"] = True
+
+        if state == "BORROWED":
+            if self._online_player_named(fp.name) is not None:
+                return False, "假人在背包借出期间异常在线，请先处理后再强制归还。"
+            try:
+                self._put_inventory_session(fp, session, "WAIT_SPAWN_FOR_RETURN")
+                if not self.spawn(fp, force=True):
+                    session.pop("admin_force_return", None)
+                    session.pop("admin_force_operator", None)
+                    self._put_inventory_session(fp, session, "BORROWED")
+                    return False, "生成接收背包的假人失败；事务仍锁定，玩家背包未修改。"
+            except Exception as exc:
+                self._logger.error(f"强制归还启动失败 [{fp.name}]: {exc}")
+                return False, "无法启动强制归还，原事务仍保留。"
+            return True, "已开始强制归还；假人生成后将恢复双方背包并解除事务锁。"
+
+        try:
+            self.inventory_journal.put(fp.id, session)
+        except Exception as exc:
+            self._logger.error(f"强制归还标记保存失败 [{fp.name}]: {exc}")
+            return False, "无法保存强制归还标记，原事务仍保留。"
+
+        bot_player = self._bot_player(fp)
+        if bot_player is not None:
+            return self._complete_forced_inventory_return(fp, bot_player, session)
+        if state == "WAIT_SPAWN_FOR_RETURN" and self._spawn_request_pending(fp.id):
+            return True, "假人正在生成，生成后将强制归还并恢复玩家原背包。"
+        if self.spawn(fp, force=True):
+            return True, "正在请求假人上线；通过身份验证后将强制归还并恢复玩家原背包。"
+        return False, "假人当前无法上线或通过身份验证；原事务仍锁定，请稍后重试。"
 
     def inventory_locked(self, fp: FakePlayer) -> bool:
         return self.inventory_session(fp) is not None
@@ -441,6 +685,15 @@ class FakeBotManager:
         if bot_player is None or not hasattr(bot_player, "inventory"):
             return
 
+        if session.get("admin_force_return") and state in {
+            "WAIT_SPAWN_FOR_RETURN", "RETURNING_PREPARED", "PLAYER_CLEARED",
+            "BOT_RESTORED", "PLAYER_RESTORED",
+        }:
+            ok, message = self._complete_forced_inventory_return(fp, bot_player, session)
+            if not ok:
+                self._notify_session_player(session, message, error=True)
+            return
+
         if state == "ROLLBACK_BOT_ONLY_WAIT_SPAWN":
             try:
                 if not bot_player.inventory.is_empty:
@@ -602,6 +855,13 @@ class FakeBotManager:
             return
 
         state = str(session.get("state", ""))
+        if session.get("admin_force_return"):
+            bot_player = self._bot_player(fp)
+            if bot_player is not None:
+                self._complete_forced_inventory_return(fp, bot_player, session)
+            elif self._bridge.active and not self._spawn_request_pending(fp.id):
+                self.spawn(fp, force=True)
+            return
         try:
             current_digest = inventory_digest(player.inventory)
         except Exception as exc:
@@ -757,6 +1017,39 @@ class FakeBotManager:
         fp.sim_has_position = False
         return True
 
+    def _online_bot_names(self) -> set[str]:
+        """按服务端仍在线的托管对象计数，下线请求不会提前释放名额。"""
+        names: set[str] = set()
+        for player in self._plugin.server.online_players:
+            try:
+                if "endstone_bot_managed" in player.scoreboard_tags:
+                    names.add(str(player.name).lower())
+            except Exception:
+                continue
+        return names
+
+    def online_count(self) -> int:
+        return len(self._online_bot_names())
+
+    def _spawn_request_pending(self, bot_id: str) -> bool:
+        return bool(self._pending_spawn.get(bot_id) and
+                    time.monotonic() - self._last_spawn_request.get(bot_id, -999.0) < 10.0)
+
+    def online_limit_error(self, fp: FakePlayer | None = None) -> str | None:
+        """在实际在线对象之外，为最近的生成请求预留名额。"""
+        occupied = self._online_bot_names()
+        # Reuse the spawn retry window. A lost acknowledgement must not reserve
+        # a slot forever; the behavior pack also checks live objects at creation.
+        for bot_id in self._pending_spawn:
+            pending = self.bots.get(bot_id)
+            if pending is not None and self._spawn_request_pending(bot_id):
+                occupied.add(pending.name.lower())
+        if fp is not None and fp.name.lower() in occupied:
+            return None  # Re-authentication/respawn does not add an online bot.
+        if len(occupied) >= self._settings.max_total:
+            return f"全服同时在线假人已达到上限 {self._settings.max_total}，请先让其他假人下线。"
+        return None
+
     def spawn_limit_error(self, sender: Any) -> str | None:
         if self._plugin.is_admin(sender):
             return None
@@ -765,8 +1058,6 @@ class FakeBotManager:
         owned = len(self.bots_for_owner(uuid, name))
         if not limits.unlimited and owned >= limits.max_bots:
             return f"你最多只能拥有 {limits.max_bots} 个假人。"
-        if not limits.bypass_global_limit and len(self.bots) >= self._settings.max_total:
-            return f"全服假人数量已达到上限 {self._settings.max_total}。"
         last = self._spawn_cooldowns.get(key, -999.0)
         remaining = limits.cooldown_seconds - (time.monotonic() - last)
         if remaining > 0:
@@ -811,6 +1102,11 @@ class FakeBotManager:
         self.bots[fp.id] = fp
         self.name_index[fp.name.lower()] = fp.id
         self._spawn_cooldowns[key] = time.monotonic()
+        limit_error = self.online_limit_error(fp)
+        if limit_error:
+            fp.desired_online = False
+            self.save()
+            return True, f"已创建假人 {fp.name}，当前保持下线。{limit_error}之后可手动上线。"
         self.save()
         self.spawn(fp, force=True)
         return True, f"已创建假人 {fp.name}。"
@@ -838,6 +1134,11 @@ class FakeBotManager:
         )
         self.bots[fp.id] = fp
         self.name_index[fp.name.lower()] = fp.id
+        limit_error = self.online_limit_error(fp)
+        if limit_error:
+            fp.desired_online = False
+            self.save()
+            return True, f"已创建假人 {fp.name}，当前保持下线。{limit_error}之后可手动上线。"
         self.save()
         self.spawn(fp, force=True)
         return True, f"已在 {dimension} ({x:.1f}, {y:.1f}, {z:.1f}) 创建假人 {fp.name}。"
@@ -849,6 +1150,8 @@ class FakeBotManager:
             return False
         if not self._bridge.active:
             return False
+        if self.online_limit_error(fp):
+            return False
         now = time.monotonic()
         last = self._last_spawn_request.get(fp.id, -999.0)
         if not force and now - last < 10.0:
@@ -857,8 +1160,11 @@ class FakeBotManager:
         generation = secrets.token_hex(16)
         self._pending_spawn[fp.id] = generation
         payload = self._pose_payload(fp)
-        payload.update(definition=fp.id, generation=generation)
-        return self._bridge.send_bridge("spawn", payload)
+        payload.update(definition=fp.id, generation=generation, maxOnline=self._settings.max_total)
+        sent = self._bridge.send_bridge("spawn", payload)
+        if not sent and self._pending_spawn.get(fp.id) == generation:
+            self._pending_spawn.pop(fp.id, None)
+        return sent
 
     def ensure_all_spawned(self) -> None:
         if not self._bridge.active:
@@ -990,6 +1296,10 @@ class FakeBotManager:
             return False, "假人背包正在整理，不能切换上下线状态。"
 
         desired = bool(online)
+        if desired:
+            limit_error = self.online_limit_error(fp)
+            if limit_error:
+                return False, limit_error
         if not desired and not self.persist_bot_inventory(fp):
             return False, f"{fp.name} 背包保存失败，已取消下线。"
 
@@ -1026,6 +1336,7 @@ class FakeBotManager:
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
+        self._pending_spawn.pop(fp.id, None)
         try:
             self.bot_inventory_store.remove(fp.id)
         except Exception as exc:
@@ -1043,6 +1354,7 @@ class FakeBotManager:
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
+        self._pending_spawn.pop(fp.id, None)
         try:
             self.bot_inventory_store.remove(fp.id)
         except Exception as exc:

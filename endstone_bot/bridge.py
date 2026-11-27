@@ -7,7 +7,7 @@ from typing import Any
 
 from endstone.event import ScriptMessageEvent
 
-BRIDGE_PROTOCOL = 3
+BRIDGE_PROTOCOL = 4
 
 
 class BridgeManager:

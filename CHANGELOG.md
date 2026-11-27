@@ -1,3 +1,33 @@
+## 4.7.4 (2026-11-27)
+
+- Change `max_total` from a saved-definition cap to a simultaneous online cap shared by every spawn path, including administrator commands and restart recovery.
+- Allow more saved definitions than online slots. Create new definitions offline when full and report a clear rejection for manual online requests until a slot is available.
+- Count live objects until disconnect completes, reserve in-flight requests, and release failed requests without blocking later spawns. Keep adoption and respawn of existing objects available at capacity.
+- Show online usage separately from saved definitions in GUI and status output. Keep personal ownership quotas and cooldowns; legacy global-bypass overrides no longer bypass the online cap.
+- Upgrade the bundled behavior pack to 4.3.4 and bridge protocol to 4. Install the matching Python package and behavior pack together, then fully restart BDS. Existing bot definitions, per-player quotas and inventory data remain readable.
+
+## 4.7.3 (2026-11-10)
+
+- Finish journal recovery after a BDS restart without overwriting a previously restored player's main inventory: when the player inventory matches the escrow snapshot and the respawned bot is empty, restore only the bot's edited inventory.
+- Reject repeated administrator confirmation too when a previous force-return archived attempt exists and either nonempty live inventory no longer matches; require manual reconciliation rather than overwriting newer items.
+- Preserve an additional pre-write archive and the original lock when the bot-only restoration cannot be verified.
+- Test restart recovery, new-item conflicts, and repeat OP submissions using the existing synthetic inventory boundaries.
+
+## 4.7.2 (2026-11-09)
+
+- Fix real BDS forced return failing after restoration: dropper data 3->0 and piston data 1->0 are native canonicalization of directional block-state metadata, not missing item stacks.
+- Compare item identity, count and NBT; tolerate only the observed block-data normalization and ignore the borrower's later hotbar-selection changes.
+- If both inventories already match journal snapshots, archive live inventories and unlock without writing items again.
+- Prevent automatic retries of a previously attempted restoration from overwriting items the borrower acquired afterward.
+- Add regression cases based on the captured production inventory mismatch and interrupted recovery.
+
+## 4.7.1 (2026-11-09)
+
+- Add OP-only confirmed force-return of stuck inventory transactions in GUI and console.
+- Return the edited main inventory to the fake player and restore the borrower's original main inventory from the journal, including stuck BOT_RESTORED sessions.
+- Archive the complete transaction and both current live inventories before overwriting any slots; retain the lock if recovery is incomplete.
+- Add cross-version regression tests for BORROWED, interrupted return, native NBT digest differences and write failures.
+
 ## 4.7.0 (2026-10-22)
 
 - Bind inventory access and asynchronous bridge messages to current definition and verified runtime identity.

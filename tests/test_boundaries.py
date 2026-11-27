@@ -268,7 +268,7 @@ class PersistenceAndWireTests(unittest.TestCase):
         batches = json.loads(raw.splitlines()[-1])
         bridge = BridgeManager(Logger(), lambda _: True)
         bridge._token = '1'*32
-        bridge._accept_message('bot:hello_ack', {'p':3,'t':bridge._token,'standalone':True})
+        bridge._accept_message('bot:hello_ack', {'p':bridge.protocol,'t':bridge._token,'standalone':True})
         Plugin = load_class('plugin.py', 'BotPlugin', {'Plugin':object, 'event_handler':lambda f:f})
         consumer = Plugin()
         positions = []

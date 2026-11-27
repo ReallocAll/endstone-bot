@@ -24,7 +24,8 @@ class BotGUI:
             content=(
                 f"桥接：{bridge}§r\n"
                 f"我的假人：§f{len(owned)} / §f{max_text}\n"
-                f"全服假人：§f{len(self._plugin.manager.bots)} / §f{self._plugin.settings.max_total}"
+                f"全服在线：§f{self._plugin.manager.online_count()} / §f{self._plugin.settings.max_total}\n"
+                f"全服已创建：§f{len(self._plugin.manager.bots)}"
             ),
         )
         form.add_button("§a创建假人\n在当前位置创建", on_click=lambda p: self.open_create(p))
@@ -38,7 +39,7 @@ class BotGUI:
             title="§l§a创建假人",
             controls=[
                 TextInput(label="假人名称", placeholder="字母/数字/_/-，最长24字符"),
-                Label(text="假人会固定在创建位置；移动后可在管理菜单重新设定位置。"),
+                Label(text="假人会固定在创建位置；在线名额已满时保存为离线假人，之后可手动上线。"),
             ],
             submit_button="创建",
         )
@@ -126,6 +127,11 @@ class BotGUI:
                     "§a完成背包整理\n§f归还主背包并恢复你的原背包",
                     on_click=lambda p: self._inventory_done(p, fp),
                 )
+            if session is not None and self._plugin.is_admin(player):
+                form.add_button(
+                    "§c管理员强制归还\n§f归还假人背包并恢复玩家原背包",
+                    on_click=lambda p: self._confirm_forced_return(p, fp),
+                )
         form.add_button(
             "返回",
             on_click=(lambda p: self.open_admin_bots(p)) if admin_context else (lambda p: self.open_my_bots(p)),
@@ -143,6 +149,35 @@ class BotGUI:
     def _inventory_done(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.finish_inventory_edit(player, fp)
         player.send_message(("§a" if ok else "§c") + message)
+
+    def _confirm_forced_return(self, player: Any, fp: FakePlayer) -> None:
+        if not self._plugin.is_admin(player):
+            player.send_message("§c只有管理员可以强制归还。")
+            return
+        session = self._plugin.manager.inventory_session(fp)
+        if session is None:
+            player.send_message("§e该事务已经结束。")
+            return
+        form = MessageForm(
+            title=f"§l§c强制归还 {fp.name}",
+            content=(
+                f"当前状态：{session.get('state')}\n"
+                f"整理玩家：{session.get('player_name')}\n"
+                "将备份当前双方背包，再强制归还假人背包、恢复玩家原背包。\n"
+                "§c可能覆盖当前背包中的物品；请确认玩家已停止整理，必要时通过归档核对差异。"
+            ),
+            button1="§c确认强制归还",
+            button2="取消",
+        )
+
+        def submit(p: Any, button: int) -> None:
+            if button != 0:
+                return
+            ok, message = self._plugin.manager.admin_force_return_inventory(p, fp)
+            p.send_message(("§a" if ok else "§c") + message)
+
+        form.on_submit = submit
+        player.send_form(form)
 
     def _move_here(self, player: Any, fp: FakePlayer) -> None:
         ok, message = self._plugin.manager.move_here(player, fp)
@@ -183,8 +218,9 @@ class BotGUI:
             title="§l§c假人管理员",
             content=(
                 f"桥接：{bridge}§r\n"
-                f"全服假人：§f{len(self._plugin.manager.bots)} / §f{self._plugin.settings.max_total}\n"
-                f"普通玩家默认上限：§f{self._plugin.settings.max_per_player}"
+                f"全服在线：§f{self._plugin.manager.online_count()} / §f{self._plugin.settings.max_total}\n"
+                f"全服已创建：§f{len(self._plugin.manager.bots)}\n"
+                f"普通玩家默认拥有上限：§f{self._plugin.settings.max_per_player}"
             ),
         )
         form.add_button("§e全服假人\n查看和管理全部假人", on_click=lambda p: self.open_admin_bots(p))
@@ -220,7 +256,7 @@ class BotGUI:
             limits = self._plugin.settings.effective_for_key(key)
             max_text = "不限" if limits.unlimited else str(limits.max_bots)
             form.add_button(
-                f"§b{target_name}\n上限 {max_text} | 冷却 {limits.cooldown_seconds}s" + (" | 绕过全服" if limits.bypass_global_limit else ""),
+                f"§b{target_name}\n拥有上限 {max_text} | 冷却 {limits.cooldown_seconds}s",
                 on_click=(lambda k=key, n=target_name: lambda p: self.open_limit_menu(p, k, n))(),
             )
         form.add_button("§e按玩家名设置\n可管理离线玩家", on_click=lambda p: self.open_limit_name_input(p))
@@ -266,7 +302,7 @@ class BotGUI:
             limits = self._plugin.settings.effective_for_key(key)
             max_text = "不限" if limits.unlimited else str(limits.max_bots)
             form.add_button(
-                f"§b{name}\n上限 {max_text} | 冷却 {limits.cooldown_seconds}s" + (" | 绕过全服" if limits.bypass_global_limit else ""),
+                f"§b{name}\n拥有上限 {max_text} | 冷却 {limits.cooldown_seconds}s",
                 on_click=(lambda k=key, n=name: lambda p: self.open_limit_menu(p, k, n))(),
             )
         form.add_button("返回", on_click=lambda p: self.open_limit_players(p))
@@ -280,13 +316,13 @@ class BotGUI:
         form = ActionForm(
             title=f"§l§6{name}",
             content=(
-                f"有效假人上限：§f{max_text}\n"
+                f"个人拥有上限：§f{max_text}\n"
                 f"创建冷却：§f{limits.cooldown_seconds}s\n"
-                f"绕过全服上限：§f{'是' if limits.bypass_global_limit else '否'}"
+                f"全服在线上限：§f{self._plugin.settings.max_total}（对所有玩家生效）"
             ),
         )
         form.add_button("§e编辑限制", on_click=lambda p: self.open_limit_edit(p, key, name))
-        form.add_button("§a解除全部限制\n不限数量、无冷却、绕过全服上限", on_click=lambda p: self._set_unlimited(p, key, name))
+        form.add_button("§a解除个人限制\n不限拥有数量、无创建冷却", on_click=lambda p: self._set_unlimited(p, key, name))
         form.add_button("恢复全局默认", on_click=lambda p: self._reset_limits(p, key, name))
         form.add_button("返回", on_click=lambda p: self.open_limit_players(p))
         player.send_form(form)
@@ -303,11 +339,10 @@ class BotGUI:
         form = ModalForm(
             title=f"§l§6{name} - 限制",
             controls=[
-                Toggle(label="解除假人数量限制", default_value=unlimited),
-                Slider(label="假人上限（未解除时）", min=0, max=32, step=1, default_value=float(max(0, min(32, max_default)))),
+                Toggle(label="解除个人拥有数量限制", default_value=unlimited),
+                Slider(label="个人拥有上限（未解除时）", min=0, max=32, step=1, default_value=float(max(0, min(32, max_default)))),
                 Toggle(label="取消创建冷却", default_value=no_cooldown),
                 Slider(label="创建冷却（秒）", min=0, max=60, step=1, default_value=float(max(0, min(60, cooldown_default)))),
-                Toggle(label="绕过全服假人数量上限", default_value=effective.bypass_global_limit),
             ],
             submit_button="保存",
         )
@@ -322,7 +357,6 @@ class BotGUI:
                 max_bots = int(float(data[1]))
                 is_no_cd = bool(data[2])
                 cooldown = int(float(data[3]))
-                bypass = bool(data[4])
             except Exception:
                 p.send_message("§c表单数据无效。")
                 return
@@ -331,7 +365,6 @@ class BotGUI:
                 name=name,
                 max_bots=-1 if is_unlimited else max_bots,
                 cooldown_seconds=0 if is_no_cd else cooldown,
-                bypass_global_limit=bypass,
             )
             p.send_message(f"§a已更新 {name} 的假人限制。")
             self.open_limit_menu(p, key, name)
@@ -343,7 +376,7 @@ class BotGUI:
         if not self._plugin.is_admin(player):
             return
         self._plugin.settings.set_unlimited(key, name)
-        player.send_message(f"§a已解除 {name} 的全部假人限制。")
+        player.send_message(f"§a已解除 {name} 的个人拥有数量限制和创建冷却；全服在线上限仍然生效。")
         self.open_limit_menu(player, key, name)
 
     def _reset_limits(self, player: Any, key: str, name: str) -> None:
@@ -359,8 +392,8 @@ class BotGUI:
         form = ModalForm(
             title="§l§5全局假人设置",
             controls=[
-                Slider(label="全服假人总上限", min=1, max=128, step=1, default_value=float(min(128, self._plugin.settings.max_total))),
-                Slider(label="普通玩家默认上限", min=0, max=64, step=1, default_value=float(min(64, self._plugin.settings.max_per_player))),
+                Slider(label="全服假人同时在线上限", min=1, max=128, step=1, default_value=float(min(128, self._plugin.settings.max_total))),
+                Slider(label="普通玩家默认拥有上限", min=0, max=64, step=1, default_value=float(min(64, self._plugin.settings.max_per_player))),
                 Slider(label="默认创建冷却（秒）", min=0, max=3600, step=1, default_value=float(min(3600, self._plugin.settings.spawn_cooldown_seconds))),
                 Toggle(label="启用挂机位置守护", default_value=self._plugin.settings.guard_enabled),
                 Slider(label="位置守护距离（方块）", min=0.5, max=8.0, step=0.5, default_value=float(max(0.5, min(8.0, self._plugin.settings.guard_distance)))),

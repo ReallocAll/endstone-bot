@@ -8,7 +8,7 @@
 
 - 只使用真正的 `SimulatedPlayer`，不再提供 NPC + tickingarea 伪假人。
 - 普通玩家默认受严格资源限制，避免无限创建造成 DoS。
-- 管理员可以给指定玩家单独提高上限，或一键解除全部限制，适合生电玩家/技术玩家。
+- 管理员可以给指定玩家提高或解除个人拥有数量与创建冷却限制；全服同时在线上限对所有玩家生效。
 - `/bot` 直接打开玩家 GUI，适合 ClockMenu 只执行一个命令接入。
 - 管理员 GUI 可以管理全服假人、玩家例外和全局限制。
 - 控制台可以完成状态、列表、创建、移动、删除、玩家限制和全局设置，不依赖 GUI。
@@ -37,15 +37,19 @@
 }
 ```
 
-配置文件位于插件数据目录的 `config.json`。默认普通玩家不能创建假人（上限 0），全服总上限为 10；管理员可以通过配置文件、游戏内 [管理员面板 → 全局设置] 或 `/bot config maxtotal|maxperplayer|cooldown` 调整，全局设置修改后立即生效。
+配置文件位于插件数据目录的 `config.json`。`max_total = 10` 限制全服**同时在线的假人数量**，包括管理员创建的假人；离线定义不占在线名额，已保存的定义数量可以超过 10。`max_per_player = 0` 仍表示普通玩家默认不能拥有假人，需先配置个人配额。
+
+创建假人时若在线名额已满，仍保存新定义并提示其处于离线状态；有空位后可手动上线。手动上线遇满额会拒绝请求并保留原状态。自动恢复和重启补生同样遵守在线上限；下线对象真正离开后才释放名额。GUI 和 `/bot status` 分别显示在线数量及已创建数量。
+
+管理员可以通过配置文件、游戏内 [管理员面板 → 全局设置] 或 `/bot config maxtotal|maxperplayer|cooldown` 调整。全局设置对后续操作立即生效；降低在线上限不会强制踢出已有假人，待在线数量降到上限以下后才允许新增上线。
 
 玩家例外保存在 `player_limits.json`：
 
-- `max_bots = -1`：不限假人数量。
+- `max_bots = -1`：不限个人拥有的假人定义数量。
 - `cooldown_seconds = 0`：取消创建冷却。
-- `bypass_global_limit = true`：该玩家可以绕过全服总上限。
+- `bypass_global_limit`：旧版字段保留读取，但不再绕过全服在线上限。
 
-管理员 GUI 中的“解除全部限制”会一次设置这三项。
+管理员 GUI 中的“解除个人限制”会同时取消该玩家的拥有数量限制和创建冷却。管理员、个人不限量玩家及控制台都受同一个全服在线上限约束。
 
 ## GUI / ClockMenu
 
@@ -79,13 +83,13 @@
 /bot moveat <name> <x> <y> <z> <overworld|nether|the_end>
 /bot remove <name>
 /bot removeall
+/bot forcereturn <name> confirm
 
 /bot limit <player> show
 /bot limit <player> unlimited
 /bot limit <player> default
 /bot limit <player> max <count>
 /bot limit <player> cooldown <seconds>
-/bot limit <player> bypassglobal <true|false>
 
 /bot config show
 /bot config reload
@@ -94,7 +98,13 @@
 /bot config cooldown <seconds>
 ```
 
-给生电玩家解除全部限制：
+**背包事务强制归还（管理员）**：在 `/bot admin` → 全服假人 → 对应假人中，选择“管理员强制归还”并确认；控制台和 OP 可输入 `/bot forcereturn Farshs2 confirm`。当前整理玩家必须在线，假人必须能通过运行时身份验证。只有存在未完成事务时才显示 GUI 入口。
+
+管理员确认后，插件**将整理后的物品归还假人，并用事务中保存的原始玩家背包快照覆盖玩家的主背包**。如果事务处于 `BORROWED`，先生成假人接收玩家当前整理结果，再恢复玩家原背包；如果卡在 `BOT_RESTORED`，直接重新执行双方恢复。插件核对主背包槽位、物品类型、数量和 NBT；已证实的投掷器与活塞方块状态辅助数据归零不视为物品丢失，玩家后来切换的快捷栏选中槽也不参与物品核对。若双方物品已经与快照匹配，则只归档并解锁，不再重复写回；若玩家原背包已经恢复、重启后的假人背包为空，则仅补回假人背包后解锁，不再修改玩家物品。此前强制归还失败且非空背包出现新变化时，无论重连自动恢复还是管理员重复确认，均拒绝覆盖后来获得的物品。
+
+**操作会覆盖双方主背包当前内容。** 在任何覆盖发生之前，插件先将完整事务和玩家、假人的实时背包一并归档到 `plugins/bot/inventory_recovery/`。即使操作失败也保留原事务锁，便于重试或人工核对。归档不代表可以直接补发一份物品，避免在活背包已恢复时造成复制。盔甲、副手不参与整理和恢复；非 `BORROWED` 或已进入归还阶段的其他异常事务状态不允许盲目强制操作。
+
+给生电玩家解除个人拥有数量限制和创建冷却：
 
 ```text
 /bot limit Alice unlimited
@@ -152,10 +162,11 @@ python plugins/bot/enable_beta.py
 
 Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并更新 `world_behavior_packs.json`。首次安装或 Pack 版本升级后仍需要完整重启一次。
 
-## Bridge protocol 3
+## Bridge protocol 4
 
 - Python → Behavior Pack 使用 `/scriptevent`；Behavior Pack → Python 使用内部 `/botbridge` 命令回调，payload 采用 UTF-8 hex（仅 `0-9a-f`），避免命令参数对 `%`、引号或空格的词法限制，并避免依赖 Script API 自发 `scriptevent` 是否再次进入 Endstone 的 `ScriptMessageEvent` hook。
 - `bot:hello` 建立随机 token；后续消息必须使用同一 token。
+- `bot:spawn` 携带当前全服在线上限 `maxOnline`。Python 统一检查上线名额，行为包在创建新原生对象前按实际活对象再次检查；接管或重生已有对象不额外占用名额。生成失败回包携带 `definition`、`generation` 和 `op: "spawn"`，以便只清理对应请求的占位。
 - 优先接受 `sourceType=Server`；兼容 Endstone `ConsoleCommandSender` 产生的无实体/无方块/NPC 来源命令，同时拒绝玩家、实体、命令方块和 NPC 来源。
 - `/reload` 时仍使用经过认证的 `bot:shutdown` 和 drain barrier 防止重复生成；若 Script Runtime 在 reload 中被重置而旧 standalone SimulatedPlayer 仍存活，新行为包会通过持久 tag 从 `world.getAllPlayers()` 重新发现并接管原对象，而不是创建 `Name(1)` / `Name(2)`。4.6.1 留下的未打 tag 同名 SimulatedPlayer 也会在下一次已认证 spawn 请求时迁移接管并补 tag。
 - heartbeat 超时后插件真正进入断开状态。
@@ -166,6 +177,8 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 
 - `bots.json`：持久化假人定义、挂机锚点、pitch/yaw 和世界空间视线方向。
 - `bot_inventories.json`：假人普通上下线/正常关服时使用的一次性主背包 escrow；恢复成功后立即消费删除。只保存主背包/快捷栏与当前手持槽，不保存盔甲和副手。
+- `inventory_journal.json`：整理背包的持久化事务及活动锁；不要手工直接删除。
+- `inventory_recovery/`：管理员强制归还前保存的原始事务和操作前双方实时背包，用于失败后的人工核对。
 - `config.json`：全局资源限制与位置守护设置。
 - `enable_beta.py`：插件自动生成的显式离线 Beta APIs 补丁脚本。
 - `level_dat_backups/<world>/`：手动执行补丁脚本时创建的校验备份。
@@ -178,10 +191,10 @@ Behavior Pack 根据已经加载的 `server.level.name` 自动安装/升级并�
 本 fork 基于 BCZZB/endstone-bot 与 mcbes-manage-script by YueHua46。见仓库 `LICENSE` 和 Required Notice。
 
 
-### 运行时身份与背包恢复（协议 3）
+### 运行时身份与背包恢复（协议 4）
 
-Python 与行为包必须一起更新；行为包版本 4.3.3 需要完整重启后生效。
-`bot:spawn` 携带 `definition`（定义 ID）与 `generation`（本次随机请求 ID）；
+Python 与行为包必须一起更新；行为包版本 4.3.4 需要完整重启后生效。
+`bot:spawn` 携带 `definition`（定义 ID）、`generation`（本次随机请求 ID）与 `maxOnline`（全服同时在线上限）；
 `bot:spawned` 回传这两个字段及 `runtime`（该活对象的持久来源标记）。
 Python 同时验证活对象上的定义、运行时和本次请求标签及 UUID，绝不把同名玩家当作假人。
 `bot:positions` 使用 `positions` 数组；`p` 始终只表示协议版本。
@@ -203,13 +216,13 @@ Python 同时验证活对象上的定义、运行时和本次请求标签及 UUI
 标签少于 256 字符。仓库测试使用合成宿主验证 Python 决策及完整 JS 编码流程，
 不替代真实 BDS 中的 join 事件顺序、标签可见时序、死亡/重生和插件 reload 验证。
 
-### 4.7.0 离线升级步骤
+### 4.7.4 离线升级步骤
 
 1. 在旧版本仍正常运行时完成所有背包整理，停止投掷动作，再正常关闭 BDS。若日志提示库存保存失败，先处理活库存，不要强制重启。
-2. 备份完整世界目录和 `plugins/bot/`。在服务器当前 Python 包环境中执行 `uv pip install --upgrade ./endstone_bot-4.7.0-py3-none-any.whl`（需要代理时可写 `p uv pip ...`）。
+2. 备份完整世界目录和 `plugins/bot/`。在服务器当前 Python 包环境中执行 `uv pip install --upgrade ./endstone_bot-4.7.4-py3-none-any.whl`（需要代理时可写 `p uv pip ...`）。
 3. 从该 wheel 的 `endstone_bot/behavior_pack/` 取出 `manifest.json` 与 `scripts/main.js`，替换当前世界的 `behavior_packs/endstone_bot_bridge/` 中对应文件。先备份原目录，不要从其他版本拼装文件。
-4. 在该世界 `world_behavior_packs.json` 中保留其他行为包；把 pack_id 为 `a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f` 的条目版本设为 `[4,3,3]`（不存在则添加）。勿修改 `level.dat`，也无需重新启用已有 Beta APIs。
-5. 完整启动 BDS，确认 `/bot status` 显示 protocol 3 桥接在线。先验证一个有物品的假人上下线与库存，再恢复正常使用。如果出现恢复阻塞，保留快照并按上节处理赠送物品。
+4. 在该世界 `world_behavior_packs.json` 中保留其他行为包；把 pack_id 为 `a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f` 的条目版本设为 `[4,3,4]`（不存在则添加）。勿修改 `level.dat`，也无需重新启用已有 Beta APIs。
+5. 完整启动 BDS，确认 `/bot status` 显示 protocol 4 桥接在线、在线数量与已创建数量分别显示。先验证一个有物品的假人上下线与库存，再恢复正常使用。如果出现恢复阻塞，保留快照并按上节处理赠送物品。
 
 也可让新插件首次启动时自动部署行为包及注册版本，但此时运行中的仍可能是旧脚本；必须再正常停服并完整启动一次。仅替换 wheel 后 `/reload` 不能完成协议升级。
 

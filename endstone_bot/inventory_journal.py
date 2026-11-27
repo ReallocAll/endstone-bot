@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -277,6 +278,46 @@ class InventoryJournal:
         updated.pop(str(bot_id), None)
         self._write_sessions(updated)
         self.sessions = updated
+
+    def archive_session(
+        self,
+        bot_id: str,
+        operator: str,
+        *,
+        live_player: dict[str, Any],
+        live_bot: dict[str, Any],
+    ) -> Path:
+        """Durably preserve the transaction and both live inventories before force restore."""
+        session = self.get_for_bot(bot_id)
+        if session is None:
+            raise ValueError("inventory session no longer exists")
+
+        archive_dir = self.path.parent / "inventory_recovery"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / f"{time.time_ns()}-{bot_id}.json"
+        with archive_path.open("x", encoding="utf-8") as fp:
+            json.dump(
+                {
+                    "version": self.VERSION,
+                    "bot_id": bot_id,
+                    "operator": operator,
+                    "session": session,
+                    "live_player": live_player,
+                    "live_bot": live_bot,
+                },
+                fp, ensure_ascii=False, indent=2, sort_keys=True,
+            )
+            fp.flush()
+            os.fsync(fp.fileno())
+        try:
+            dir_fd = os.open(str(archive_dir), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+        return archive_path
 
     def get_for_bot(self, bot_id: str) -> dict[str, Any] | None:
         value = self.sessions.get(str(bot_id))
