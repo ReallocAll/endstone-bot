@@ -1,3 +1,11 @@
+## 4.7.4 (2026-11-27)
+
+- Change `max_total` from a saved-definition cap to a simultaneous online cap shared by every spawn path, including administrator commands and restart recovery.
+- Allow more saved definitions than online slots. Create new definitions offline when full and report a clear rejection for manual online requests until a slot is available.
+- Count live objects until disconnect completes, reserve in-flight requests, and release failed requests without blocking later spawns. Keep adoption and respawn of existing objects available at capacity.
+- Show online usage separately from saved definitions in GUI and status output. Keep personal ownership quotas and cooldowns; legacy global-bypass overrides no longer bypass the online cap.
+- Upgrade the bundled behavior pack to 4.3.4 and bridge protocol to 4. Install the matching Python package and behavior pack together, then fully restart BDS. Existing bot definitions, per-player quotas and inventory data remain readable.
+
 ## 4.7.3 (2026-11-10)
 
 - Finish journal recovery after a BDS restart without overwriting a previously restored player's main inventory: when the player inventory matches the escrow snapshot and the respawned bot is empty, restore only the bot's edited inventory.

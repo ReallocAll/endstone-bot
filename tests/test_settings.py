@@ -69,7 +69,16 @@ class SettingsTests(unittest.TestCase):
         effective = self.settings.effective_for_key(key)
         self.assertTrue(effective.unlimited)
         self.assertEqual(effective.cooldown_seconds, 0)
-        self.assertTrue(effective.bypass_global_limit)
+        self.assertFalse(effective.bypass_global_limit)
+
+    def test_legacy_global_bypass_is_preserved_but_not_effective(self):
+        key, name = self.settings.resolve_target_key("LegacyPlayer", [])
+        self.settings.set_override(key, name=name, bypass_global_limit=True)
+        self.settings.reload()
+
+        self.assertTrue(self.settings.override(key)["bypass_global_limit"])
+        self.assertFalse(self.settings.effective_for_key(key).bypass_global_limit)
+        self.assertNotIn(key, dict(self.settings.configured_overrides()))
 
     def test_name_override_migrates_to_uuid(self):
         key, name = self.settings.resolve_target_key("Alice", [])

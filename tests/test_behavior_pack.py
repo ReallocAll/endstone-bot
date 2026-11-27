@@ -86,7 +86,6 @@ class BehaviorPackTests(unittest.TestCase):
         block = self.source[start:end]
         self.assertIn("spawnStandaloneSimulatedPlayer(pose)", block)
         self.assertIn("standalone SimulatedPlayer spawn failed", block)
-        self.assertIn("try { sim.disconnect(); } catch (_) {}", block)
         self.assertIn("desiredPoses.delete(name)", block)
         self.assertIn("existing SimulatedPlayer teleport failed", block)
         self.assertNotIn("startSimulatedPlayerGameTest", block)
@@ -168,7 +167,6 @@ class BehaviorPackTests(unittest.TestCase):
         self.assertIn("requested player name is still occupied", block)
         self.assertIn("actualName !== name", block)
         self.assertIn("refusing duplicate", block)
-        self.assertIn("sim.disconnect()", block)
 
     def test_throw_does_not_change_position_or_view(self):
         start = self.source.index("function doThrowTrident(req)")

@@ -137,6 +137,7 @@ class AdminForceReturnTests(unittest.TestCase):
         manager._logger = self.logger
         manager._bridge = NS(active=True)
         manager._pending_spawn = {}
+        manager._last_spawn_request = {}
         manager._online_player_named = lambda name: self.online.get(name.lower())
         manager._bot_player = lambda fp: self.online.get(fp.name.lower())
         self.spawn_calls = []

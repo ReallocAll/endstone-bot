@@ -152,6 +152,28 @@ class FakeBotManager:
         self.mark_spawned(fp.name, True)
         return fp
 
+    def reject_spawn(self, data: dict[str, Any]) -> bool:
+        """释放失败请求的名额；旧请求的回包不能取消新请求。"""
+        fp = self.bots.get(str(data.get("definition", "")))
+        if (data.get("op") != "spawn" or fp is None or data.get("n") != fp.name or
+                self._pending_spawn.get(fp.id) != data.get("generation") or
+                not isinstance(data.get("generation"), str)):
+            return False
+        self._pending_spawn.pop(fp.id, None)
+        fp.sim_spawn_confirmed = False
+        fp.sim_has_position = False
+        fp.sim_last_seen_at = 0.0
+        session = self.inventory_session(fp)
+        if session is not None and session.get("state") == "WAIT_SPAWN_FOR_RETURN":
+            session.pop("admin_force_return", None)
+            session.pop("admin_force_operator", None)
+            self._put_inventory_session(fp, session, "BORROWED")
+            self._notify_session_player(
+                session, "接收背包的假人未能上线；你的背包未被修改，请腾出在线名额后重试归还。",
+                error=True,
+            )
+        return True
+
     def _player_identity(self, sender: Any) -> tuple[str, str, str]:
         name = str(getattr(sender, "name", "") or "")
         uuid = str(getattr(sender, "unique_id", "") or "")
@@ -465,7 +487,7 @@ class FakeBotManager:
         bot_player = self._bot_player(fp)
         if bot_player is not None:
             return self._complete_forced_inventory_return(fp, bot_player, session)
-        if state == "WAIT_SPAWN_FOR_RETURN" and self._pending_spawn.get(fp.id):
+        if state == "WAIT_SPAWN_FOR_RETURN" and self._spawn_request_pending(fp.id):
             return True, "假人正在生成，生成后将强制归还并恢复玩家原背包。"
         if self.spawn(fp, force=True):
             return True, "正在请求假人上线；通过身份验证后将强制归还并恢复玩家原背包。"
@@ -837,7 +859,7 @@ class FakeBotManager:
             bot_player = self._bot_player(fp)
             if bot_player is not None:
                 self._complete_forced_inventory_return(fp, bot_player, session)
-            elif self._bridge.active and not self._pending_spawn.get(fp.id):
+            elif self._bridge.active and not self._spawn_request_pending(fp.id):
                 self.spawn(fp, force=True)
             return
         try:
@@ -995,6 +1017,39 @@ class FakeBotManager:
         fp.sim_has_position = False
         return True
 
+    def _online_bot_names(self) -> set[str]:
+        """按服务端仍在线的托管对象计数，下线请求不会提前释放名额。"""
+        names: set[str] = set()
+        for player in self._plugin.server.online_players:
+            try:
+                if "endstone_bot_managed" in player.scoreboard_tags:
+                    names.add(str(player.name).lower())
+            except Exception:
+                continue
+        return names
+
+    def online_count(self) -> int:
+        return len(self._online_bot_names())
+
+    def _spawn_request_pending(self, bot_id: str) -> bool:
+        return bool(self._pending_spawn.get(bot_id) and
+                    time.monotonic() - self._last_spawn_request.get(bot_id, -999.0) < 10.0)
+
+    def online_limit_error(self, fp: FakePlayer | None = None) -> str | None:
+        """在实际在线对象之外，为最近的生成请求预留名额。"""
+        occupied = self._online_bot_names()
+        # Reuse the spawn retry window. A lost acknowledgement must not reserve
+        # a slot forever; the behavior pack also checks live objects at creation.
+        for bot_id in self._pending_spawn:
+            pending = self.bots.get(bot_id)
+            if pending is not None and self._spawn_request_pending(bot_id):
+                occupied.add(pending.name.lower())
+        if fp is not None and fp.name.lower() in occupied:
+            return None  # Re-authentication/respawn does not add an online bot.
+        if len(occupied) >= self._settings.max_total:
+            return f"全服同时在线假人已达到上限 {self._settings.max_total}，请先让其他假人下线。"
+        return None
+
     def spawn_limit_error(self, sender: Any) -> str | None:
         if self._plugin.is_admin(sender):
             return None
@@ -1003,8 +1058,6 @@ class FakeBotManager:
         owned = len(self.bots_for_owner(uuid, name))
         if not limits.unlimited and owned >= limits.max_bots:
             return f"你最多只能拥有 {limits.max_bots} 个假人。"
-        if not limits.bypass_global_limit and len(self.bots) >= self._settings.max_total:
-            return f"全服假人数量已达到上限 {self._settings.max_total}。"
         last = self._spawn_cooldowns.get(key, -999.0)
         remaining = limits.cooldown_seconds - (time.monotonic() - last)
         if remaining > 0:
@@ -1049,6 +1102,11 @@ class FakeBotManager:
         self.bots[fp.id] = fp
         self.name_index[fp.name.lower()] = fp.id
         self._spawn_cooldowns[key] = time.monotonic()
+        limit_error = self.online_limit_error(fp)
+        if limit_error:
+            fp.desired_online = False
+            self.save()
+            return True, f"已创建假人 {fp.name}，当前保持下线。{limit_error}之后可手动上线。"
         self.save()
         self.spawn(fp, force=True)
         return True, f"已创建假人 {fp.name}。"
@@ -1076,6 +1134,11 @@ class FakeBotManager:
         )
         self.bots[fp.id] = fp
         self.name_index[fp.name.lower()] = fp.id
+        limit_error = self.online_limit_error(fp)
+        if limit_error:
+            fp.desired_online = False
+            self.save()
+            return True, f"已创建假人 {fp.name}，当前保持下线。{limit_error}之后可手动上线。"
         self.save()
         self.spawn(fp, force=True)
         return True, f"已在 {dimension} ({x:.1f}, {y:.1f}, {z:.1f}) 创建假人 {fp.name}。"
@@ -1087,6 +1150,8 @@ class FakeBotManager:
             return False
         if not self._bridge.active:
             return False
+        if self.online_limit_error(fp):
+            return False
         now = time.monotonic()
         last = self._last_spawn_request.get(fp.id, -999.0)
         if not force and now - last < 10.0:
@@ -1095,8 +1160,11 @@ class FakeBotManager:
         generation = secrets.token_hex(16)
         self._pending_spawn[fp.id] = generation
         payload = self._pose_payload(fp)
-        payload.update(definition=fp.id, generation=generation)
-        return self._bridge.send_bridge("spawn", payload)
+        payload.update(definition=fp.id, generation=generation, maxOnline=self._settings.max_total)
+        sent = self._bridge.send_bridge("spawn", payload)
+        if not sent and self._pending_spawn.get(fp.id) == generation:
+            self._pending_spawn.pop(fp.id, None)
+        return sent
 
     def ensure_all_spawned(self) -> None:
         if not self._bridge.active:
@@ -1228,6 +1296,10 @@ class FakeBotManager:
             return False, "假人背包正在整理，不能切换上下线状态。"
 
         desired = bool(online)
+        if desired:
+            limit_error = self.online_limit_error(fp)
+            if limit_error:
+                return False, limit_error
         if not desired and not self.persist_bot_inventory(fp):
             return False, f"{fp.name} 背包保存失败，已取消下线。"
 
@@ -1264,6 +1336,7 @@ class FakeBotManager:
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
+        self._pending_spawn.pop(fp.id, None)
         try:
             self.bot_inventory_store.remove(fp.id)
         except Exception as exc:
@@ -1281,6 +1354,7 @@ class FakeBotManager:
         self.bots.pop(fp.id, None)
         self.name_index.pop(fp.name.lower(), None)
         self._last_spawn_request.pop(fp.id, None)
+        self._pending_spawn.pop(fp.id, None)
         try:
             self.bot_inventory_store.remove(fp.id)
         except Exception as exc:

@@ -57,7 +57,7 @@ class BotPlugin(Plugin):
     }
 
     BEHAVIOR_PACK_UUID = "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f"
-    BEHAVIOR_PACK_VERSION = [4, 3, 3]
+    BEHAVIOR_PACK_VERSION = [4, 3, 4]
 
     def on_load(self) -> None:
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -97,7 +97,7 @@ class BotPlugin(Plugin):
         self.bridge.hello()
         self.logger.info(
             f"Bot 已启用：SimulatedPlayer only，bridge protocol={BRIDGE_PROTOCOL}，"
-            f"默认每人 {self.settings.max_per_player} 个，全服 {self.settings.max_total} 个。"
+            f"默认每人可拥有 {self.settings.max_per_player} 个，全服同时在线上限 {self.settings.max_total} 个。"
         )
         if pack_state in {"installed", "updated"}:
             self.logger.warning("行为包已写入当前世界；首次安装或更新后需要重启服务器。")
@@ -205,6 +205,7 @@ class BotPlugin(Plugin):
         data = parsed["data"]
 
         if msg_id == "bot:hello_ack":
+            self.manager._pending_spawn.clear()
             self._list_names.clear()
             self.bridge.request_list()
             self.manager.recover_online_inventory_sessions()
@@ -269,6 +270,7 @@ class BotPlugin(Plugin):
                 self.manager.ensure_all_spawned()
             return
         if msg_id == "bot:error":
+            self.manager.reject_spawn(data)
             self.logger.warning(
                 f"行为包错误 [{data.get('n', '')}]: {data.get('e', 'unknown error')}"
             )
@@ -464,8 +466,9 @@ class BotPlugin(Plugin):
         sender.send_message(
             "§b===== 假人系统状态 =====\n"
             f"桥接：{bridge} (protocol {BRIDGE_PROTOCOL})\n"
-            f"假人：{len(self.manager.bots)} / {self.settings.max_total}\n"
-            f"普通玩家默认：{self.settings.max_per_player} 个\n"
+            f"在线假人：{self.manager.online_count()} / {self.settings.max_total}\n"
+            f"已创建：{len(self.manager.bots)} 个\n"
+            f"普通玩家默认可拥有：{self.settings.max_per_player} 个\n"
             f"创建冷却：{self.settings.spawn_cooldown_seconds}s\n"
             f"背包事务：{self.manager.active_inventory_sessions()}\n"
             f"位置守护：{'开启' if self.settings.guard_enabled else '关闭'}"
@@ -550,7 +553,7 @@ class BotPlugin(Plugin):
             return True
         if mode == "unlimited":
             self.settings.set_unlimited(key, name)
-            sender.send_message(f"§a已解除 {name} 的全部假人限制。")
+            sender.send_message(f"§a已解除 {name} 的个人拥有数量与创建冷却限制；仍受全服在线上限约束。")
             return True
         if mode == "default":
             self.settings.reset_override(key, name)
@@ -577,11 +580,7 @@ class BotPlugin(Plugin):
             self._send_limit(sender, key, name)
             return True
         if mode == "bypassglobal":
-            if len(args) < 4:
-                return True
-            enabled = str(args[3]).lower() in ("true", "1", "on", "yes")
-            self.settings.set_override(key, name=name, bypass_global_limit=enabled)
-            self._send_limit(sender, key, name)
+            self._send_error(sender, "全服同时在线上限对所有玩家和管理员生效，不再支持 bypassglobal。")
             return True
         return True
 
@@ -589,8 +588,8 @@ class BotPlugin(Plugin):
         limits = self.settings.effective_for_key(key)
         max_text = "不限" if limits.unlimited else str(limits.max_bots)
         sender.send_message(
-            f"§b{name} 的假人限制：§r上限={max_text}，冷却={limits.cooldown_seconds}s，"
-            f"绕过全服上限={'是' if limits.bypass_global_limit else '否'}"
+            f"§b{name} 的假人限制：§r拥有上限={max_text}，冷却={limits.cooldown_seconds}s，"
+            f"全服同时在线上限={self.settings.max_total}"
         )
 
     def _cmd_config(self, sender: CommandSender, args: list[str]) -> bool:

@@ -29,13 +29,13 @@ class WheelTests(unittest.TestCase):
             ):
                 self.assertIn(path, names)
             manifest = json.loads(zf.read("endstone_bot/behavior_pack/manifest.json"))
-            self.assertEqual(manifest["header"]["version"], [4, 3, 3])
-            self.assertEqual(manifest["modules"][0]["version"], [4, 3, 3])
+            self.assertEqual(manifest["header"]["version"], [4, 3, 4])
+            self.assertEqual(manifest["modules"][0]["version"], [4, 3, 4])
             for member in ("endstone_bot/behavior_pack/scripts/main.js", "endstone_bot/behavior_pack/manifest.json",
                            "endstone_bot/bridge.py", "endstone_bot/plugin.py"):
                 self.assertEqual(zf.read(member), Path(member).read_bytes(), member)
-            self.assertIn(b"BRIDGE_PROTOCOL = 3", zf.read("endstone_bot/bridge.py"))
-            self.assertIn(b"const PROTOCOL = 3", zf.read("endstone_bot/behavior_pack/scripts/main.js"))
+            self.assertIn(b"BRIDGE_PROTOCOL = 4", zf.read("endstone_bot/bridge.py"))
+            self.assertIn(b"const PROTOCOL = 4", zf.read("endstone_bot/behavior_pack/scripts/main.js"))
             self.assertIn(f'__version__ = "{version}"'.encode(), zf.read("endstone_bot/__init__.py"))
             ep_name = next(x for x in names if x.endswith(".dist-info/entry_points.txt"))
             cfg = configparser.ConfigParser()

@@ -38,11 +38,13 @@ jobs:
         run: |
           python - <<'PY'
           import importlib.metadata as md, json, os
+          from pathlib import Path
           dist = md.distribution('endstone-bot')
           assert dist.version == os.environ['VERSION']
           manifest = json.loads(dist.locate_file('endstone_bot/behavior_pack/manifest.json').read_text())
-          assert manifest['header']['version'] == [4, 3, 3]
-          assert 'const PROTOCOL = 3' in dist.locate_file('endstone_bot/behavior_pack/scripts/main.js').read_text()
+          assert manifest == json.loads(Path('endstone_bot/behavior_pack/manifest.json').read_text())
+          script = 'endstone_bot/behavior_pack/scripts/main.js'
+          assert dist.locate_file(script).read_text() == Path(script).read_text()
           print('Installed', dist.version, 'pack', manifest['header']['version'])
           PY
       - name: Test exact released source and wheel

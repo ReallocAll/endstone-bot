@@ -6,14 +6,14 @@
  * - the first valid bot:hello establishes the per-process token
  * - every later command must carry the exact same token and protocol
  *
- * Protocol 3 intentionally keeps the bridge small: spawn/remove/teleport/trident/list/clear,
+ * Protocol 4 intentionally keeps the bridge small: spawn/remove/teleport/trident/list/clear,
  * heartbeat, lifecycle acknowledgements, loss notifications, and batched positions.
  */
 
 import * as GameTest from "@minecraft/server-gametest";
 import { GameMode, system, world } from "@minecraft/server";
 
-const PROTOCOL = 3;
+const PROTOCOL = 4;
 const MAX_MESSAGE_CHARS = 1400;
 const standaloneSimulatedPlayerSupported =
     typeof GameTest.spawnSimulatedPlayer === "function";
@@ -436,7 +436,7 @@ function isDeadSim(name, sim) {
     return false;
 }
 
-function finishRespawn(name, sim, pose) {
+function finishRespawn(name, sim, pose, spawnRequest = null) {
     sessionTimeout(() => {
         try {
             teleportSim(sim, pose);
@@ -449,18 +449,19 @@ function finishRespawn(name, sim, pose) {
             deadPlayers.delete(name);
             tridentBusy.delete(name);
             reply("bot:lost", { n: name, reason: "respawn_failed", e: String(e) });
+            if (spawnRequest) spawnError(spawnRequest, `SimulatedPlayer respawn failed: ${String(e)}`);
         }
     }, 1);
 }
 
-function respawnTracked(name, sim, pose) {
+function respawnTracked(name, sim, pose, spawnRequest = null) {
     if (!sim || !deadPlayers.has(name)) return false;
     try {
         const ok = sim.respawn();
         if (!ok) {
             throw new Error("SimulatedPlayer.respawn returned false");
         }
-        finishRespawn(name, sim, pose);
+        finishRespawn(name, sim, pose, spawnRequest);
         return true;
     } catch (e) {
         try { sim.disconnect(); } catch (_) {}
@@ -468,14 +469,43 @@ function respawnTracked(name, sim, pose) {
         deadPlayers.delete(name);
         tridentBusy.delete(name);
         reply("bot:lost", { n: name, reason: "respawn_failed", e: String(e) });
+        if (spawnRequest) spawnError(spawnRequest, `SimulatedPlayer respawn failed: ${String(e)}`);
         return false;
     }
 }
 
+function spawnError(req, error, details = {}) {
+    reply("bot:error", {
+        n: String(req.n || ""), definition: req.definition, generation: req.generation,
+        op: "spawn", e: error, ...details,
+    });
+}
+
+function onlineManagedCount() {
+    discoverManagedSimulatedPlayers();
+    let count = 0;
+    for (const [name, sim] of simulatedPlayers) {
+        // A pending disconnect still occupies a slot until the object has left.
+        if (simStillAttached(name, sim)) count += 1;
+    }
+    return count;
+}
+
+function disconnectFailedSpawn(name, sim) {
+    try { sim.disconnect(); } catch (_) {}
+    if (!simStillAttached(name, sim)) cleanupTrackedSim(name, sim);
+}
+
 function doSpawn(req) {
     const name = String(req.n || "");
-    if (!name) return;
-    if (!/^[0-9a-f]{32}$/.test(req.definition) || !/^[0-9a-f]{32}$/.test(req.generation)) return;
+    if (!name || !/^[0-9a-f]{32}$/.test(req.definition) || !/^[0-9a-f]{32}$/.test(req.generation)) {
+        spawnError(req, "invalid spawn identity");
+        return;
+    }
+    if (!Number.isInteger(req.maxOnline) || req.maxOnline < 0) {
+        spawnError(req, "maxOnline must be a nonnegative integer");
+        return;
+    }
     const pose = rememberPose(req);
     const existing = simulatedPlayers.get(name);
     if (existing) {
@@ -486,11 +516,15 @@ function doSpawn(req) {
 
         if (existingValid) {
             try { bindRuntime(existing, req); } catch (e) {
-                reply("bot:error", {n: name, e: String(e)});
+                spawnError(req, String(e));
+                return;
+            }
+            if (!markManagedSimulatedPlayer(existing)) {
+                spawnError(req, "failed to mark existing SimulatedPlayer for reload adoption");
                 return;
             }
             if (isDeadSim(name, existing)) {
-                respawnTracked(name, existing, pose);
+                respawnTracked(name, existing, pose, req);
                 return;
             }
             try {
@@ -499,7 +533,7 @@ function doSpawn(req) {
             } catch (e) {
                 // Keep a still-valid existing player tracked. Untracking here would
                 // create an orphan that later list/reconcile cannot safely own.
-                reply("bot:error", { n: name, e: `existing SimulatedPlayer teleport failed: ${String(e)}` });
+                spawnError(req, `existing SimulatedPlayer teleport failed: ${String(e)}`);
             }
             return;
         }
@@ -511,18 +545,18 @@ function doSpawn(req) {
     }
 
     if (drainState) {
-        reply("bot:error", { n: name, e: "SimulatedPlayer drain in progress" });
+        spawnError(req, "SimulatedPlayer drain in progress");
         return;
     }
 
     const existingWorldSim = findRuntimeSimulatedPlayer(name);
     if (existingWorldSim) {
         try { bindRuntime(existingWorldSim, req); } catch (e) {
-            reply("bot:error", {n: name, e: String(e)});
+            spawnError(req, String(e));
             return;
         }
         if (!markManagedSimulatedPlayer(existingWorldSim)) {
-            reply("bot:error", { n: name, e: "failed to mark existing SimulatedPlayer for reload adoption" });
+            spawnError(req, "failed to mark existing SimulatedPlayer for reload adoption");
             return;
         }
         simulatedPlayers.set(name, existingWorldSim);
@@ -532,13 +566,23 @@ function doSpawn(req) {
             teleportSim(existingWorldSim, pose);
             reply("bot:spawned", { n: name, ok: true, existed: true, adopted: true });
         } catch (e) {
-            reply("bot:error", { n: name, e: `adopted SimulatedPlayer teleport failed: ${String(e)}` });
+            spawnError(req, `adopted SimulatedPlayer teleport failed: ${String(e)}`);
         }
         return;
     }
 
     if (worldHasExactPlayerName(name) === true) {
-        reply("bot:error", { n: name, e: "requested player name is still occupied" });
+        spawnError(req, "requested player name is still occupied");
+        return;
+    }
+
+    // Existing objects above may be reauthenticated or respawned at capacity.
+    // Only a new native player consumes another slot; script events run in order.
+    const onlineCount = onlineManagedCount();
+    if (onlineCount >= req.maxOnline) {
+        spawnError(req, `online SimulatedPlayer limit reached (${onlineCount}/${req.maxOnline})`, {
+            reason: "online_limit", maxOnline: req.maxOnline, onlineCount,
+        });
         return;
     }
 
@@ -546,34 +590,35 @@ function doSpawn(req) {
     try {
         sim = spawnStandaloneSimulatedPlayer(pose);
     } catch (e) {
-        reply("bot:error", { n: name, e: `standalone SimulatedPlayer spawn failed: ${String(e)}` });
+        spawnError(req, `standalone SimulatedPlayer spawn failed: ${String(e)}`);
         return;
     }
 
     if (!sim) {
-        reply("bot:error", { n: name, e: "GameTest.spawnSimulatedPlayer returned null" });
+        spawnError(req, "GameTest.spawnSimulatedPlayer returned null");
         return;
     }
 
     let actualName = "";
     try { actualName = String(sim.name || ""); } catch (_) {}
+    // Own the native object before setup can fail. Failed setup may initiate an
+    // asynchronous disconnect, and the live object must continue occupying a slot.
+    const trackedName = actualName || name;
+    simulatedPlayers.set(trackedName, sim);
     if (actualName !== name) {
-        try { sim.disconnect(); } catch (_) {}
-        reply("bot:error", {
-            n: name,
-            e: `spawn returned renamed SimulatedPlayer "${actualName}"; refusing duplicate`,
-        });
+        disconnectFailedSpawn(trackedName, sim);
+        spawnError(req, `spawn returned renamed SimulatedPlayer "${actualName}"; refusing duplicate`);
         return;
     }
 
     try { bindRuntime(sim, req); } catch (e) {
-        try { sim.disconnect(); } catch (_) {}
-        reply("bot:error", {n: name, e: String(e)});
+        disconnectFailedSpawn(trackedName, sim);
+        spawnError(req, String(e));
         return;
     }
     if (!markManagedSimulatedPlayer(sim)) {
-        try { sim.disconnect(); } catch (_) {}
-        reply("bot:error", { n: name, e: "failed to mark SimulatedPlayer for reload adoption" });
+        disconnectFailedSpawn(trackedName, sim);
+        spawnError(req, "failed to mark SimulatedPlayer for reload adoption");
         return;
     }
 
@@ -583,15 +628,14 @@ function doSpawn(req) {
         // and no second placement teleport are required.
         orientSim(sim, pose);
     } catch (e) {
-        try { sim.disconnect(); } catch (_) {}
+        disconnectFailedSpawn(trackedName, sim);
         deadPlayers.delete(name);
         tridentBusy.delete(name);
         desiredPoses.delete(name);
-        reply("bot:error", { n: name, e: `initial SimulatedPlayer orientation failed: ${String(e)}` });
+        spawnError(req, `initial SimulatedPlayer orientation failed: ${String(e)}`);
         return;
     }
 
-    simulatedPlayers.set(name, sim);
     deadPlayers.delete(name);
     reply("bot:spawned", { n: name, ok: true });
 }

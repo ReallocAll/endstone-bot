@@ -37,10 +37,11 @@ class SettingsManager:
 
     Per-player values use the following semantics:
       * max_bots=None: inherit global default
-      * max_bots=-1: unlimited
+      * max_bots=-1: unlimited owned definitions
       * cooldown_seconds=None: inherit global default
       * cooldown_seconds=0: no cooldown
-      * bypass_global_limit=True: this player may create bots after the global cap
+      * bypass_global_limit: legacy field retained in storage; no longer effective
+    max_total limits simultaneous online bots for every player, including admins.
     """
 
     def __init__(self, data_folder: Path, logger: Any) -> None:
@@ -261,7 +262,7 @@ class SettingsManager:
         return EffectiveLimits(
             max_bots=self.max_per_player if max_bots is None else int(max_bots),
             cooldown_seconds=self.spawn_cooldown_seconds if cooldown is None else max(0, int(cooldown)),
-            bypass_global_limit=bool(rec.get("bypass_global_limit", False)),
+            bypass_global_limit=False,
         )
 
     def effective(self, uuid: str, name: str) -> tuple[str, EffectiveLimits]:
@@ -304,7 +305,7 @@ class SettingsManager:
             name=name,
             max_bots=-1,
             cooldown_seconds=0,
-            bypass_global_limit=True,
+            bypass_global_limit=False,
         )
 
     def reset_override(self, key: str, name: str) -> None:
@@ -324,7 +325,7 @@ class SettingsManager:
     def configured_overrides(self) -> list[tuple[str, dict[str, Any]]]:
         result = []
         for key, rec in self.known_players():
-            if rec.get("max_bots") is not None or rec.get("cooldown_seconds") is not None or rec.get("bypass_global_limit"):
+            if rec.get("max_bots") is not None or rec.get("cooldown_seconds") is not None:
                 result.append((key, rec))
         return result
 
